@@ -24,15 +24,33 @@ COMPL_API     = "https://llm.api.cloud.yandex.net/v1/chat/completions"
 def parse_allowed_origins(raw: str) -> List[str]:
     """Возвращает список доменов из переменной окружения ALLOWED_ORIGINS.
 
-    Поддерживает разделители запятая, пробел, табы и переводы строк.
+    Поддерживает форматы:
+    * строка с разделителями (запятые/пробелы/переводы строк);
+    * JSON-строка или JSON-массив (например '["https://foo"]').
     Пустая строка, а также значение вида "*" трактуется как разрешение для всех
     доменов.
     """
 
-    if not raw or raw.strip() == "*":
+    if not raw:
         return ["*"]
 
-    parts = [p.strip() for p in re.split(r"[,\s]+", raw) if p.strip()]
+    raw = raw.strip()
+    if raw == "*":
+        return ["*"]
+
+    # Попытка разобрать значение как JSON (список или строка)
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = None
+
+    if isinstance(parsed, str):
+        raw = parsed.strip()
+    elif isinstance(parsed, (list, tuple, set)):
+        parts = [str(item).strip() for item in parsed if str(item).strip()]
+        return parts or ["*"]
+
+    parts = [p.strip().strip('"').strip("'") for p in re.split(r"[,\s]+", raw) if p.strip()]
     return parts or ["*"]
 
 
