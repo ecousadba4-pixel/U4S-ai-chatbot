@@ -9,7 +9,6 @@ on:
       - "scripts/refresh_vector_store_files.py"
   workflow_dispatch: {}
 
-# нужно, чтобы шаг с обновлением README.md мог пушить изменения
 permissions:
   contents: write
 
@@ -22,17 +21,14 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # пути/ID
       KB_PATH: kb.jsonl
       YANDEX_FOLDER_ID: b1g2vuvi3is4jn4eamo0
       VECTOR_STORE_ID: ${{ secrets.VECTOR_STORE_ID }}
-
-      # секреты
       YANDEX_API_KEY: ${{ secrets.YANDEX_API_KEY }}
 
     steps:
       - name: Checkout repo
-      - uses: actions/checkout@v4
+        uses: actions/checkout@v4
 
       - name: Debug: show workspace tree (one time)
         run: |
@@ -51,7 +47,7 @@ jobs:
           ok = True
           with open("kb.jsonl","r",encoding="utf-8") as f:
             for i,line in enumerate(f,1):
-              if not line.strip(): 
+              if not line.strip():
                 continue
               try:
                 o=json.loads(line)
@@ -98,3 +94,4 @@ jobs:
           git add README.md
           git commit -m "docs: update last KB sync date (${SYNC_DATE})" || echo "no changes to commit"
           git push
+
