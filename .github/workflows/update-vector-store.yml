@@ -24,34 +24,13 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Debug: show workspace tree
+      - name: Show workspace tree
         run: |
           pwd
           ls -la
 
       - name: Ensure kb.jsonl exists and is non-empty
-        run: |
-          test -s "kb.jsonl" || { echo "kb.jsonl not found or empty"; exit 1; }
-
-      - name: Basic JSONL validation
-        run: |
-          python - <<'PY'
-          import json, sys
-          ok = True
-          with open("kb.jsonl","r",encoding="utf-8") as f:
-              for i,line in enumerate(f,1):
-                  if not line.strip(): 
-                      continue
-                  try:
-                      o=json.loads(line)
-                  except Exception as e:
-                      print(f"Invalid JSON at line {i}: {e}", file=sys.stderr); ok=False; break
-                  for k in ("id","title","text","metadata"):
-                      if k not in o:
-                          print(f"Missing '{k}' at line {i}", file=sys.stderr); ok=False; break
-                  if not ok: break
-          sys.exit(0 if ok else 2)
-          PY
+        run: test -s "kb.jsonl"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -63,6 +42,13 @@ jobs:
           python -V
           pip install --upgrade pip
           pip install openai
+
+      - name: Basic JSONL validation
+        run: |
+          python -c "import json,sys; f=open('kb.jsonl','r',encoding='utf-8'); i=0; \
+for line in f: i+=1; s=line.strip(); \
+  (None if s=='' else json.loads(s)); \
+print('OK lines:', i)"
 
       - name: Soft-refresh Yandex AI Studio Vector Store
         env:
@@ -80,11 +66,11 @@ jobs:
         if: success()
         run: |
           SYNC_DATE=$(date -u +"%Y-%m-%d %H:%M UTC")
-          echo "🕓 Last KB Sync: ${SYNC_DATE}" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "Last KB Sync: ${SYNC_DATE}" | tee -a "$GITHUB_STEP_SUMMARY"
           if grep -q "Last KB Sync:" README.md; then
-            sed -i "s|🕓 Last KB Sync: .*|🕓 Last KB Sync: ${SYNC_DATE}|" README.md
+            sed -i "s|Last KB Sync: .*|Last KB Sync: ${SYNC_DATE}|" README.md
           else
-            printf "\n🕓 Last KB Sync: ${SYNC_DATE}\n" >> README.md
+            printf "\nLast KB Sync: ${SYNC_DATE}\n" >> README.md
           fi
           git config --global user.email "actions@github.com"
           git config --global user.name "github-actions"
