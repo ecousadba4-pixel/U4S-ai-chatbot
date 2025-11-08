@@ -1,5 +1,54 @@
 (function(){
-  const FN_URL = "https://ai-chatbot-u4s-karinausadba.amvera.io/api/chat"; // ← эндпоинт FastAPI
+  const DEFAULT_FN_URL = "https://ai-chatbot-u4s-karinausadba.amvera.io/api/chat"; // ← эндпоинт FastAPI
+
+  function readInlineJsonConfig(){
+    const el = document.getElementById('u4s-config');
+    if(!el) return null;
+    const text = el.textContent || el.innerText || '';
+    if(!text.trim()) return null;
+    try {
+      return JSON.parse(text);
+    } catch(_) {
+      return null;
+    }
+  }
+
+  function pickEndpoint(obj){
+    if(!obj || typeof obj !== 'object') return '';
+    return (
+      obj.fnUrl || obj.fn_url ||
+      obj.endpoint || obj.apiEndpoint || obj.api_endpoint ||
+      obj.apiUrl || obj.api_url || ''
+    );
+  }
+
+  function readAttrEndpoint(node){
+    if(!node || typeof node.getAttribute !== 'function') return '';
+    return node.getAttribute('data-u4s-fn-url') || '';
+  }
+
+  function readQueryEndpoint(){
+    try {
+      const url = new URL(location.href);
+      return url.searchParams.get('fnUrl') || url.searchParams.get('endpoint') || '';
+    } catch(_) {
+      return '';
+    }
+  }
+
+  function resolveFnUrl(){
+    const globalCfg = typeof window !== 'undefined' ? pickEndpoint(window.__U4S_CONFIG__) : '';
+    const inlineCfg = pickEndpoint(readInlineJsonConfig());
+    const attrHtml = readAttrEndpoint(document.documentElement);
+    const attrBody = readAttrEndpoint(document.body);
+    const query = readQueryEndpoint();
+
+    return [globalCfg, inlineCfg, attrHtml, attrBody, query, DEFAULT_FN_URL]
+      .map(v => (typeof v === 'string' ? v.trim() : ''))
+      .find(v => !!v) || DEFAULT_FN_URL;
+  }
+
+  const FN_URL = resolveFnUrl();
 
   const $fab = document.getElementById('u4s-fab');
   const $chat = document.getElementById('u4s-chat');
