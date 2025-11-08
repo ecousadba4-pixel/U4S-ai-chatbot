@@ -27,7 +27,7 @@ services:
       cpu: "0.5"
       memory: "512Mi"
     domains:
-      - host: YOUR_DOMAIN_HERE            # например: api.usadba4.ru
+      - host: ai-chatbot-u4s-karinausadba.amvera.io
         paths:
           - path: /
             port: 8000
