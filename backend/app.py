@@ -270,25 +270,32 @@ def rag_via_responses(question: str) -> str:
 
     payload = {
         "model": f"gpt://{CONFIG.yandex_folder_id}/yandexgpt/latest",
-        "input": [
-            {"role": "system", "content": [{"type": "input_text", "text": SYSTEM_PROMPT_RAG}]},
-            {"role": "user", "content": [{"type": "input_text", "text": question}]},
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT_RAG},
+            {"role": "user", "content": question},
         ],
         "tools": [{"type": "file_search"}],
         "tool_resources": {"file_search": {"vector_store_ids": [CONFIG.vector_store_id]}},
         "temperature": 0.0,
-        "max_output_tokens": 600,
+        "max_tokens": 600,
     }
     data = CLIENT.call_responses(payload)
 
-    if isinstance(data.get("output_text"), str):
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if isinstance(choices, list) and choices:
+        message = choices[0].get("message")
+        if isinstance(message, dict) and isinstance(message.get("content"), str):
+            return message["content"].strip()
+
+    if isinstance(data, dict) and isinstance(data.get("output_text"), str):
         return data["output_text"].strip()
 
     blocks: list[str] = []
-    for item in data.get("output", []) or []:
-        for content in item.get("content", []) or []:
-            if content.get("type") == "output_text" and content.get("text"):
-                blocks.append(content["text"])
+    if isinstance(data, dict):
+        for item in data.get("output", []) or []:
+            for content in item.get("content", []) or []:
+                if content.get("type") == "output_text" and content.get("text"):
+                    blocks.append(content["text"])
 
     return ("\n".join(blocks)).strip() if blocks else "Нет данных в базе знаний."
 
