@@ -54,17 +54,13 @@ def yc_openai_headers():
 
 def format_http_error(resp: requests.Response) -> str:
     """Возвращает укороченный текст ошибки от API для логов."""
-    body: str
     try:
         data = resp.json()
         body = json.dumps(data, ensure_ascii=False)
-    except (ValueError, json.JSONDecodeError):
+    except Exception:
         body = resp.text or ""
-    body = body.strip().replace("\n", " ")
-    if len(body) > 800:
-        body = body[:800] + "…"
-    return body or "<пустой ответ>"
-
+    body = (body or "").strip().replace("\n", " ")
+    return (body[:800] + "…") if len(body) > 800 else (body or "<пустой ответ>")
 
 def ensure_ok(resp: requests.Response, label: str) -> None:
     """Бросает подробную ошибку, если HTTP-ответ не 2xx."""
@@ -72,7 +68,6 @@ def ensure_ok(resp: requests.Response, label: str) -> None:
         return
     details = format_http_error(resp)
     raise RuntimeError(f"{label} HTTP {resp.status_code}: {details}")
-
 
 def vs_list_files():
     """Список файлов в Vector Store (для диагностики и фолбэка)."""
@@ -82,13 +77,27 @@ def vs_list_files():
     return r.json().get("data", [])
 
 # ========================
+#  Нормализация вопроса
+# ========================
+def normalize_question(q: str) -> str:
+    """Подсказываем модели фокус, если вопрос общий."""
+    ql = (q or "").lower()
+    if "ресторан" in ql and not any(k in ql for k in ("час", "время", "работ", "телефон", "ссылка", "как забронировать")):
+        return "Есть ли в усадьбе ресторан «Калина Красная»? Укажи часы, телефон и ссылку."
+    return q or "Есть ли в усадьбе ресторан?"
+
+# ========================
 #  Основная логика: RAG
 # ========================
 SYSTEM_PROMPT_RAG = (
-    "Ты — помощник сайта usadba4.ru.\n"
-    "1) СНАЧАЛА выполни поиск по базе знаний (Vector Store) и используй только найденные фрагменты.\n"
-    '2) Отвечай ТОЛЬКО фактами из фрагментов, без догадок и допущений. Если фрагментов нет — ответь: "Нет данных в базе знаний".\n'
-    "3) Часы/цены/телефоны передавай дословно и в одной строке."
+    "Ты — помощник сайта usadba4.ru. Работай ТОЛЬКО по базе знаний (Vector Store).\n"
+    "Если вопрос о наличии/расписании/контактах услуги — отвечай по шаблону:\n"
+    "• Да/Нет.\n"
+    "• Часы: <в одной строке>.\n"
+    "• Телефон: <если есть>.\n"
+    "• Ссылка: <если есть>.\n"
+    "Не выводи детали, не относящиеся напрямую к вопросу. "
+    "Если фактов нет — ответ: \"Нет данных в базе знаний\"."
 )
 
 def rag_via_responses(question: str) -> str:
@@ -109,7 +118,7 @@ def rag_via_responses(question: str) -> str:
     data = r.json()
 
     # Прямой текст (некоторые версии API возвращают field output_text)
-    if "output_text" in data and data["output_text"]:
+    if data.get("output_text"):
         return data["output_text"].strip()
 
     # Разбор по блокам (универсальный путь)
@@ -123,43 +132,86 @@ def rag_via_responses(question: str) -> str:
 # ========================
 #  Фолбэк: контекст из VS
 # ========================
-KEYS_FOR_CONTEXT = [
-    "ресторан", "калина красная", "кафе", "доставка", "телефон", "часы",
-    "баня", "чан", "бронь", "тариф", "спа", "сауна", "хамам", "бассейн",
-    "цена", "стоимость", "завтрак", "контакты", "меню", "онлайн-заказ", "работает ежедневно"
+PRIMARY_KEYS = [
+    "ресторан «калина красная»", 'ресторан "калина красная"', "ресторан калинка красная",
+    "ресторан", "часы работы", "работает ежедневно", "телефон ресторана", "онлайн-заказ", "ссылка", "доставка"
 ]
+SECONDARY_KEYS = ["кафе", "завтрак", "завтраки", "меню", "кухня"]
+ALL_KEYS = list({*PRIMARY_KEYS, *SECONDARY_KEYS})
 
-def build_context_from_vs() -> str:
-    """Собираем релевантные строки из всех файлов VS по ключевым словам."""
+def build_context_from_vs(question: str) -> str:
+    """Собираем релевантные строки из всех файлов VS, отдавая приоритет ключам про наличие/часы/телефон ресторана.
+       Исключаем «завтрак»/«завтраки», если их нет в самом вопросе.
+    """
     try:
+        ql = (question or "").lower()
+        exclude_breakfast = ("завтрак" not in ql and "завтраки" not in ql)
+
         snips = []
+        total_chars = 0
         files = vs_list_files()
+
         for f in files:
             fid = f["id"]
-            meta_resp = requests.get(
-                f"{FILES_API}/files/{fid}", headers=yc_json_headers(), timeout=30
-            )
+
+            meta_resp = requests.get(f"{FILES_API}/files/{fid}", headers=yc_json_headers(), timeout=30)
             ensure_ok(meta_resp, "Vector Store file meta")
             meta = meta_resp.json()
 
-            text_resp = requests.get(
-                f"{FILES_API}/files/{fid}/content", headers=yc_json_headers(), timeout=30
-            )
+            text_resp = requests.get(f"{FILES_API}/files/{fid}/content", headers=yc_json_headers(), timeout=30)
             ensure_ok(text_resp, "Vector Store file content")
             text = text_resp.text
-            lines = [ln for ln in text.splitlines() if any(k in ln.lower() for k in KEYS_FOR_CONTEXT)]
-            if lines:
-                snips.append(f"### {meta.get('filename','file')}\n" + "\n".join(lines))
-        return "\n\n".join(snips) or "Контекст пуст."
+            lines = text.splitlines()
+
+            # Сначала собираем все совпадения
+            hits = []
+            for ln in lines:
+                l = ln.lower()
+                if any(k in l for k in ALL_KEYS):
+                    if exclude_breakfast and ("завтрак" in l or "завтраки" in l):
+                        continue
+                    hits.append(ln.strip())
+
+            if not hits:
+                continue
+
+            # Приоритизация: primary -> 0, secondary -> 1, прочее -> 2
+            def score(line: str) -> int:
+                l = line.lower()
+                if any(k in l for k in PRIMARY_KEYS):
+                    return 0
+                if any(k in l for k in SECONDARY_KEYS):
+                    return 1
+                return 2
+
+            hits.sort(key=score)
+
+            # Ограничим до 12 строк на документ, чтобы не раздувать контекст
+            top = hits[:12]
+            block = f"### {meta.get('filename','file')}\n" + "\n".join(top)
+
+            if block:
+                snips.append(block)
+                total_chars += len(block)
+                if total_chars > 2500:  # общий лимит контекста ~2.5k символов
+                    break
+
+        return "\n\n".join(snips) if snips else "Контекст пуст."
     except Exception as e:
         print("build_context_from_vs ERROR:", e)
         return "Контекст пуст."
 
 def ask_with_vs_context(question: str) -> str:
-    """Фолбэк: обычный chat.completions, но с явным контекстом из VS."""
-    context = build_context_from_vs()
+    """Фолбэк: обычный chat.completions, но с явным контекстом из VS и строгим форматом ответа."""
+    context = build_context_from_vs(question)
     sys = (
         "Отвечай ТОЛЬКО на основе раздела CONTEXT ниже. "
+        "Если вопрос о наличии/расписании/контактах — отвечай по шаблону:\n"
+        "• Да/Нет.\n"
+        "• Часы: <в одной строке>.\n"
+        "• Телефон: <если есть>.\n"
+        "• Ссылка: <если есть>.\n"
+        "Не выводи детали, не относящиеся напрямую к вопросу. "
         "Если ответа нет в CONTEXT — напиши: 'Нет данных в базе знаний'.\n"
         f"CONTEXT:\n{context}"
     )
@@ -170,7 +222,7 @@ def ask_with_vs_context(question: str) -> str:
             {"role": "user",   "content": question},
         ],
         "temperature": 0.0,   # строго по контенту
-        "max_tokens": 600,
+        "max_tokens": 400,
     }
     r = requests.post(COMPL_API, headers=yc_openai_headers(), json=payload, timeout=60)
     ensure_ok(r, "Completions API")
@@ -208,7 +260,7 @@ def debug_info():
 @app.get("/api/chat")
 def chat_get(q: str = ""):
     """GET-вариант: удобно тестировать из адресной строки/curl -G."""
-    question = (q or "").strip() or "Есть ли в усадьбе ресторан?"
+    question = normalize_question(q)
     try:
         try:
             answer = rag_via_responses(question)  # 1) RAG
@@ -233,18 +285,15 @@ async def chat_post(request: Request):
             data = json.loads(raw.decode("utf-8", errors="ignore") or "{}")
 
         q = (data.get("question") or "").strip() if isinstance(data, dict) else ""
-        if not q:
-            q = "Есть ли в усадьбе ресторан?"
+        question = normalize_question(q)
 
         try:
-            answer = rag_via_responses(q)  # 1) RAG
+            answer = rag_via_responses(question)  # 1) RAG
         except Exception as e:
             print("RAG error (POST):", e)
-            answer = ask_with_vs_context(q)  # 2) VS-context fallback
+            answer = ask_with_vs_context(question)  # 2) VS-context fallback
         return {"answer": answer}
 
     except Exception as e:
         print("FATAL (POST):", e)
         return {"answer": "Извините, сейчас не могу ответить. Попробуйте позже."}
-
-
