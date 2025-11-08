@@ -1,0 +1,6 @@
+# 🧠 AI Chatbot U4S
+
+![KB Sync Status](https://github.com/ecousadba4-pixel/ai-chatbot-u4s/actions/workflows/update-vector-store.yml/badge.svg)
+
+RAG-чат-бот для Усадьбы Четыре Сезона.  
+Автоматическое обновление базы знаний (`kb.jsonl`) → Yandex AI Studio Vector Store.
