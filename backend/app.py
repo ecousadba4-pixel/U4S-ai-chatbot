@@ -4,12 +4,18 @@ import json
 import os
 import re
 import time
-from dataclasses import dataclass
-from typing import Any, Iterable
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Sequence
 
 import requests
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+
+from .redis_gateway import (
+    RedisHistoryGateway,
+    create_redis_client,
+    parse_redis_args,
+)
 
 FILES_API = "https://rest-assistant.api.cloud.yandex.net/v1"
 RESPONSES_API = f"{FILES_API}/responses"
@@ -63,6 +69,8 @@ class AppConfig:
     yandex_folder_id: str
     vector_store_id: str
     allowed_origins: tuple[str, ...]
+    redis_url: str = ""
+    redis_args: dict[str, Any] = field(default_factory=dict)
     http_timeout: float = 30.0
     completion_timeout: float = 60.0
     context_max_chars: int = 2500
@@ -76,6 +84,8 @@ class AppConfig:
             yandex_folder_id=_strip(os.environ.get("YANDEX_FOLDER_ID")),
             vector_store_id=_strip(os.environ.get("VECTOR_STORE_ID")),
             allowed_origins=parse_allowed_origins(os.environ.get("ALLOWED_ORIGINS", "*")),
+            redis_url=_strip(os.environ.get("REDIS_URL")),
+            redis_args=parse_redis_args(os.environ.get("REDIS_ARGS")),
         )
 
     @property
@@ -86,8 +96,21 @@ class AppConfig:
     def can_use_vector_store(self) -> bool:
         return bool(self.has_api_credentials and self.vector_store_id)
 
+    @property
+    def has_redis(self) -> bool:
+        return bool(self.redis_url)
+
 
 CONFIG = AppConfig.from_env()
+
+
+# ========================
+#  Хранилище истории в Redis
+# ========================
+
+REDIS_GATEWAY = RedisHistoryGateway(
+    create_redis_client(CONFIG.redis_url, CONFIG.redis_args)
+)
 
 
 # ========================
