@@ -1,8 +1,15 @@
 import importlib
 import os
 import sys
+from pathlib import Path
 
 import pytest
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from backend.redis_gateway import parse_redis_args
 
 
 class DummyClient:
@@ -81,3 +88,17 @@ def test_vector_store_fallback_handles_api_errors(app_module, monkeypatch):
 
     answer = app_module.ask_with_vector_store_context("Привет")
     assert answer == "Извините, сейчас не могу ответить. Попробуйте позже."
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("", {}),
+        (None, {}),
+        ("{\"password\": \"secret\", \"ssl\": true}", {"password": "secret", "ssl": True}),
+        ("password=secret&db=1", {"password": "secret", "db": 1}),
+        ("password=secret db=2", {"password": "secret", "db": 2}),
+    ],
+)
+def test_parse_redis_args_handles_multiple_formats(raw, expected):
+    assert parse_redis_args(raw) == expected
