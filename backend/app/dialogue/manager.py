@@ -66,7 +66,10 @@ class BookingDialogueManager:
             self._save_context(session_id, context)
             return DialogueResult(
                 True,
-                "Отлично, помогу с подбором номера. Укажите дату заезда (ДД.ММ.ГГГГ).",
+                (
+                    "Отлично, помогу с подбором номера. Укажите дату заезда "
+                    "(например: 25.11.2025, 25-11-2025, 25 ноября 2025, завтра)."
+                ),
                 context.intent,
                 context.branch,
             )
@@ -155,20 +158,50 @@ class BookingDialogueManager:
     def _handle_check_in(self, context: DialogueContext, question: str) -> str | None:
         parsed_date = self._extract_date(question)
         if not parsed_date:
-            return "Не смогла распознать дату. Введите, пожалуйста, дату заезда в формате ДД.ММ.ГГГГ."
+            return (
+                "Не смогла распознать дату. Введите, пожалуйста, дату заезда, например: "
+                "25.11.2025, 25-11-2025, 25 ноября 2025 или завтра."
+            )
         context.booking.check_in = parsed_date.isoformat()
         context.state = STATE_WAIT_CHECK_OUT
-        return "Спасибо! Теперь укажите дату выезда (ДД.ММ.ГГГГ)."
+        return (
+            "Спасибо! Теперь укажите дату выезда (можно писать 28.11.2025, 28-11-2025, "
+            "28 ноября 2025, завтра, в эту пятницу) или напишите, на сколько ночей "
+            "бронируете."
+        )
 
     def _handle_check_out(self, context: DialogueContext, question: str) -> str | None:
         parsed_date = self._extract_date(question)
         if not parsed_date:
-            return "Не смогла распознать дату. Введите, пожалуйста, дату выезда в формате ДД.ММ.ГГГГ."
+            nights = self._extract_nights(question)
+            if nights is not None:
+                if nights < 1:
+                    return (
+                        "Количество ночей должно быть не меньше одной. Укажите дату выезда "
+                        "или напишите, на сколько ночей нужна бронь."
+                    )
+                check_in = self._to_date(context.booking.check_in)
+                if not check_in:
+                    return (
+                        "Сначала нужно указать дату заезда. После этого можно выбрать дату "
+                        "выезда или количество ночей."
+                    )
+                parsed_date = check_in + dt.timedelta(days=nights)
+            else:
+                return (
+                    "Не смогла распознать дату. Введите, пожалуйста, дату выезда (например: "
+                    "28.11.2025, 28-11-2025, 28 ноября 2025, завтра, в эту пятницу) "
+                    "или напишите, на сколько ночей нужна бронь."
+                )
         check_in = self._to_date(context.booking.check_in)
         if check_in and parsed_date <= check_in:
             return "Дата выезда должна быть позже даты заезда. Попробуйте указать другие даты."
         context.booking.check_out = parsed_date.isoformat()
         context.state = STATE_WAIT_ADULTS
+        if check_in:
+            return (
+                "Записала дату выезда — {date}. Сколько взрослых планирует заселиться?"
+            ).format(date=parsed_date.strftime("%d.%m.%Y"))
         return "Сколько взрослых планирует заселиться?"
 
     def _handle_adults(self, context: DialogueContext, question: str) -> str | None:
@@ -212,7 +245,10 @@ class BookingDialogueManager:
             context.branch = new_context.branch
             context.state = new_context.state
             context.booking = new_context.booking
-            return "Готова подобрать новое бронирование. Укажите дату заезда (ДД.ММ.ГГГГ)."
+            return (
+                "Готова подобрать новое бронирование. Укажите дату заезда "
+                "(например: 25.11.2025, 25-11-2025, 25 ноября 2025 или завтра)."
+            )
         return None
 
     def _handle_unknown_state(self, context: DialogueContext, question: str) -> str | None:
@@ -270,7 +306,14 @@ class BookingDialogueManager:
 
     @staticmethod
     def _extract_date(question: str) -> dt.date | None:
-        iso_pattern = re.search(r"(\d{4})-(\d{2})-(\d{2})", question)
+        lowered = question.lower()
+        reference_date = dt.date.today()
+
+        relative_date = BookingDialogueManager._extract_relative_date(lowered, reference_date)
+        if relative_date:
+            return relative_date
+
+        iso_pattern = re.search(r"(\d{4})-(\d{2})-(\d{2})", lowered)
         if iso_pattern:
             year, month, day = iso_pattern.groups()
             try:
@@ -278,14 +321,90 @@ class BookingDialogueManager:
             except ValueError:
                 return None
 
-        dot_pattern = re.search(r"(\d{2})[./](\d{2})[./](\d{4})", question)
+        dot_pattern = re.search(r"(\d{1,2})[./-](\d{1,2})[./-](\d{4})", lowered)
         if dot_pattern:
             day, month, year = dot_pattern.groups()
             try:
                 return dt.date(int(year), int(month), int(day))
             except ValueError:
                 return None
+
+        month_names = {
+            "января": 1,
+            "февраля": 2,
+            "марта": 3,
+            "апреля": 4,
+            "мая": 5,
+            "июня": 6,
+            "июля": 7,
+            "августа": 8,
+            "сентября": 9,
+            "октября": 10,
+            "ноября": 11,
+            "декабря": 12,
+        }
+        text_pattern = re.search(
+            r"(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+(\d{4})",
+            lowered,
+        )
+        if text_pattern:
+            day_str, month_str, year_str = text_pattern.groups()
+            month = month_names.get(month_str)
+            if month:
+                try:
+                    return dt.date(int(year_str), month, int(day_str))
+                except ValueError:
+                    return None
+
         return None
+
+    @staticmethod
+    def _extract_relative_date(question: str, reference: dt.date) -> dt.date | None:
+        if "завтра" in question:
+            return reference + dt.timedelta(days=1)
+
+        weekday_map = {
+            "понедель": 0,
+            "вторник": 1,
+            "сред": 2,
+            "четверг": 3,
+            "пятниц": 4,
+            "суббот": 5,
+            "воскрес": 6,
+        }
+        weekday_pattern = re.search(
+            r"(?:в\s+)?(?:(?:эту|этот|этой|этим|этой)|(?:следующую|следующий|следующем|следующей))?\s*"
+            r"(понедельник|вторник|среда|среду|четверг|пятница|пятницу|суббота|субботу|воскресенье)",
+            question,
+        )
+        if weekday_pattern:
+            weekday_word = weekday_pattern.group(1)
+            has_next = "следующ" in question
+            has_this = any(token in question for token in ("эту", "этот", "этой", "этим"))
+            for key, value in weekday_map.items():
+                if key in weekday_word:
+                    days_ahead = (value - reference.weekday()) % 7
+                    if has_next:
+                        if days_ahead == 0:
+                            days_ahead = 7
+                        else:
+                            days_ahead += 7
+                    elif has_this and days_ahead == 0:
+                        return reference
+                    if days_ahead == 0:
+                        days_ahead = 7
+                    return reference + dt.timedelta(days=days_ahead)
+        return None
+
+    @staticmethod
+    def _extract_nights(question: str) -> int | None:
+        match = re.search(r"(\d+)\s*(?:ноч(?:ь|и|ей)?)", question.lower())
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
 
     @staticmethod
     def _extract_number(question: str) -> int | None:
