@@ -112,6 +112,19 @@ def test_chat_post_merges_and_persists_history(app_module, monkeypatch):
     assert history[-1]["timestamp"] >= history[-2]["timestamp"]
 
 
+def test_chat_post_returns_hint_for_empty_question(app_module, monkeypatch):
+    redis_gateway = DummyRedisGateway()
+    monkeypatch.setattr(app_module, "REDIS_GATEWAY", redis_gateway)
+
+    payload = {"sessionId": "abc", "question": "  \t\n"}
+
+    response = asyncio.run(app_module.chat_post(DummyRequest(payload)))
+
+    assert response["answer"] == app_module.EMPTY_QUESTION_ANSWER
+    assert "abc" not in redis_gateway.storage
+    assert app_module.CLIENT.calls == []
+
+
 def test_chat_reset_endpoint_clears_history(app_module, monkeypatch):
     redis_gateway = DummyRedisGateway()
     redis_gateway.storage["session"] = [
