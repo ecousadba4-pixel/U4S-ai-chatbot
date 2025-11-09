@@ -56,8 +56,8 @@ REDIS_GATEWAY = RedisHistoryGateway(
 
 SHELTER_CLOUD_CONFIG = ShelterCloudConfig(
     base_url=CONFIG.shelter_cloud_base_url,
-    client_id=CONFIG.shelter_cloud_client_id,
-    client_secret=CONFIG.shelter_cloud_client_secret,
+    token=CONFIG.shelter_cloud_token,
+    language=CONFIG.shelter_cloud_language,
     timeout=CONFIG.http_timeout,
 )
 SHELTER_CLOUD_SERVICE = ShelterCloudService(SHELTER_CLOUD_CONFIG)
