@@ -40,11 +40,7 @@ from .dialogue.state import (
     BRANCH_ONLINE_BOOKING_REDIRECT,
     INTENT_BOOKING_INQUIRY,
 )
-from .services import (
-    ShelterCloudConfig,
-    ShelterCloudOfflineService,
-    ShelterCloudService,
-)
+from .services import ShelterCloudConfig, ShelterCloudService
 
 
 logger = logging.getLogger(__name__)
@@ -59,19 +55,14 @@ REDIS_GATEWAY = RedisHistoryGateway(
 )
 
 SHELTER_CLOUD_CONFIG = ShelterCloudConfig(
-    base_url=CONFIG.shelter_cloud_base_url,
     token=CONFIG.shelter_cloud_token,
     language=CONFIG.shelter_cloud_language,
     timeout=CONFIG.http_timeout,
 )
-def _build_shelter_cloud_service(config: ShelterCloudConfig):
-    if config.is_configured():
-        return ShelterCloudService(config)
-    logger.warning("Shelter Cloud не настроен, используется офлайн-режим")
-    return ShelterCloudOfflineService()
+if not SHELTER_CLOUD_CONFIG.is_configured():
+    logger.warning("Shelter Cloud не настроен: отсутствует токен")
 
-
-SHELTER_CLOUD_SERVICE = _build_shelter_cloud_service(SHELTER_CLOUD_CONFIG)
+SHELTER_CLOUD_SERVICE = ShelterCloudService(SHELTER_CLOUD_CONFIG)
 BOOKING_DIALOGUE_MANAGER = BookingDialogueManager(
     storage=REDIS_GATEWAY,
     service=SHELTER_CLOUD_SERVICE,
