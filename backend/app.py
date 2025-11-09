@@ -63,6 +63,10 @@ else:
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_ERROR_ANSWER = "Извините, сейчас не могу ответить. Попробуйте позже."
+EMPTY_QUESTION_ANSWER = "Пожалуйста, сформулируйте вопрос."
+
+
 REDIS_GATEWAY = RedisHistoryGateway(
     create_redis_client(CONFIG.redis_url, CONFIG.redis_args)
 )
@@ -171,12 +175,16 @@ def chat_get(q: str = "") -> dict[str, str]:
             question=str(q or ""),
             system_prompt=SYSTEM_PROMPT_RAG,
         )
-        normalized_messages, _ = normalize_messages_for_model(conversation)
+        normalized_messages, normalized_question = normalize_messages_for_model(
+            conversation
+        )
+        if not normalized_question:
+            return {"answer": EMPTY_QUESTION_ANSWER}
         answer = _produce_answer(normalized_messages, log_prefix="GET")
         return {"answer": answer}
     except Exception:
         logger.exception("FATAL (GET)")
-        return {"answer": "Извините, сейчас не могу ответить. Попробуйте позже."}
+        return {"answer": DEFAULT_ERROR_ANSWER}
 
 
 @app.post("/api/chat")
@@ -203,13 +211,17 @@ async def chat_post(request: Request) -> dict[str, str]:
         question=question,
         system_prompt=SYSTEM_PROMPT_RAG,
     )
-    normalized_messages, normalized_question = normalize_messages_for_model(conversation)
+    normalized_messages, normalized_question = normalize_messages_for_model(
+        conversation
+    )
+    if not normalized_question:
+        return {"answer": EMPTY_QUESTION_ANSWER}
 
     try:
         answer = _produce_answer(normalized_messages, log_prefix="POST")
     except Exception:
         logger.exception("FATAL (POST)")
-        return {"answer": "Извините, сейчас не могу ответить. Попробуйте позже."}
+        return {"answer": DEFAULT_ERROR_ANSWER}
     else:
         if session_id:
             now = time.time()
