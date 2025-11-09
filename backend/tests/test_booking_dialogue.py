@@ -1,7 +1,9 @@
 import asyncio
+import datetime as dt
 
 from backend.app.services import ShelterCloudAvailabilityError
 from backend.tests._helpers import DummyRedisGateway, DummyRequest
+from backend.app.dialogue import manager as manager_module
 
 
 class DummyShelterCloudService:
@@ -120,6 +122,81 @@ def test_booking_flow_handles_no_rooms(app_module, monkeypatch):
 
     assert "нет свободных номеров" in response["answer"].lower()
     assert response["branch"] == "online_booking_redirect"
+
+
+def test_booking_accepts_various_date_formats(app_module, monkeypatch):
+    redis_gateway, _service = _prepare_booking(app_module, monkeypatch, offers=[])
+
+    class FixedDate(dt.date):
+        @classmethod
+        def today(cls):
+            return cls(2025, 11, 19)
+
+    monkeypatch.setattr(manager_module.dt, "date", FixedDate)
+
+    session_id = "formats"
+
+    asyncio.run(
+        app_module.chat_post(
+            DummyRequest({"sessionId": session_id, "question": "нужно забронировать"})
+        )
+    )
+
+    response = asyncio.run(
+        app_module.chat_post(
+            DummyRequest({"sessionId": session_id, "question": "заезд 25 ноября 2025"})
+        )
+    )
+    assert "дату выезда" in response["answer"].lower()
+
+    response = asyncio.run(
+        app_module.chat_post(
+            DummyRequest({"sessionId": session_id, "question": "на 3 ночи"})
+        )
+    )
+    assert "28.11.2025" in response["answer"]
+    assert "взросл" in response["answer"].lower()
+
+    context = redis_gateway.context_storage[session_id]
+    assert context["booking"]["check_in"] == "2025-11-25"
+    assert context["booking"]["check_out"] == "2025-11-28"
+
+
+def test_booking_accepts_relative_dates(app_module, monkeypatch):
+    redis_gateway, _service = _prepare_booking(app_module, monkeypatch, offers=[])
+
+    class FixedDate(dt.date):
+        @classmethod
+        def today(cls):
+            return cls(2025, 11, 19)
+
+    monkeypatch.setattr(manager_module.dt, "date", FixedDate)
+
+    session_id = "relative"
+
+    asyncio.run(
+        app_module.chat_post(
+            DummyRequest({"sessionId": session_id, "question": "хочу бронь"})
+        )
+    )
+
+    response = asyncio.run(
+        app_module.chat_post(
+            DummyRequest({"sessionId": session_id, "question": "завтра"})
+        )
+    )
+    assert "дату выезда" in response["answer"].lower()
+
+    response = asyncio.run(
+        app_module.chat_post(
+            DummyRequest({"sessionId": session_id, "question": "в эту пятницу"})
+        )
+    )
+    assert "21.11.2025" in response["answer"]
+
+    context = redis_gateway.context_storage[session_id]
+    assert context["booking"]["check_in"] == "2025-11-20"
+    assert context["booking"]["check_out"] == "2025-11-21"
 
 
 def test_booking_flow_handles_api_errors(app_module, monkeypatch):
