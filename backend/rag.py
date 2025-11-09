@@ -7,14 +7,24 @@ from typing import Any, Sequence
 
 import requests
 
-from .config import CONFIG
-from .conversation import (
-    ChatModelMessage,
-    extract_last_user_content,
-    messages_to_responses_input,
-    replace_system_prompt,
-    trim_messages_for_model,
-)
+if __package__:
+    from .config import CONFIG
+    from .conversation import (
+        ChatModelMessage,
+        extract_last_user_content,
+        messages_to_responses_input,
+        replace_system_prompt,
+        trim_messages_for_model,
+    )
+else:
+    from config import CONFIG
+    from conversation import (
+        ChatModelMessage,
+        extract_last_user_content,
+        messages_to_responses_input,
+        replace_system_prompt,
+        trim_messages_for_model,
+    )
 
 FILES_API = "https://rest-assistant.api.cloud.yandex.net/v1"
 RESPONSES_API = f"{FILES_API}/responses"
