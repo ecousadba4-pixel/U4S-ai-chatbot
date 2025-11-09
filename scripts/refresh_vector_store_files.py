@@ -329,13 +329,23 @@ def upload_file(api_key: str, folder_id: str, src: Path) -> Tuple[str, str]:
 
 def main():
     ap = argparse.ArgumentParser(description="Soft-refresh files in Yandex AI Studio Vector Store")
-    ap.add_argument("--vs-id", required=True, help="vector_store_id (сохранится тот же)")
+    ap.add_argument(
+        "--vs-id",
+        help="vector_store_id (можно задать через переменную окружения VECTOR_STORE_ID)",
+    )
     ap.add_argument("--kb", required=True, help="Путь к kb.jsonl")
     ap.add_argument("--folder-id", required=True, help="YANDEX_FOLDER_ID")
     ap.add_argument("--timeout", type=int, default=900)
     ap.add_argument("--chunk-size", type=int, default=512, help="Размер чанка в токенах")
     ap.add_argument("--chunk-overlap", type=int, default=128, help="Перекрытие чанков в токенах")
     args = ap.parse_args()
+
+    vs_id_env = os.environ.get("VECTOR_STORE_ID", "").strip()
+    vs_id = (args.vs_id or vs_id_env).strip()
+    if not vs_id:
+        raise SystemExit(
+            "vector_store_id не задан: используйте --vs-id или переменную окружения VECTOR_STORE_ID"
+        )
 
     api_key = os.environ.get("YANDEX_API_KEY", "").strip()
     if not api_key:
@@ -345,13 +355,14 @@ def main():
     if not kb_file.exists() or kb_file.stat().st_size == 0:
         raise SystemExit(f"Файл не найден или пуст: {kb_file}")
 
-    print(f"➡️  Vector Store: {args.vs_id}")
+    source = "--vs-id" if args.vs_id else "VECTOR_STORE_ID"
+    print(f"➡️  Vector Store: {vs_id} (источник: {source})")
     print(f"➡️  KB file     : {kb_file}")
     print(f"🔐 FOLDER      : {args.folder_id}")
     print(f"🔑 KEY         : {mask(api_key)}")
 
     # Проверка стора
-    vs = get_search_index(api_key, args.folder_id, args.vs_id)
+    vs = get_search_index(api_key, args.folder_id, vs_id)
     name = ""
     if isinstance(vs, dict):
         name = str(vs.get("name", ""))
@@ -361,18 +372,18 @@ def main():
     update_chunking_strategy(
         api_key=api_key,
         folder_id=args.folder_id,
-        search_index_id=args.vs_id,
+        search_index_id=vs_id,
         max_chunk_tokens=args.chunk_size,
         overlap_tokens=args.chunk_overlap,
     )
 
     # Удаляем старые файлы
     print("\n🧹 Удаляю старые файлы из стора…")
-    current_vs = get_search_index(api_key, args.folder_id, args.vs_id)
+    current_vs = get_search_index(api_key, args.folder_id, vs_id)
     existing_file_ids = _collect_file_ids(current_vs if isinstance(current_vs, dict) else {})
     if existing_file_ids:
         try:
-            remove_files(api_key, args.folder_id, args.vs_id, existing_file_ids)
+            remove_files(api_key, args.folder_id, vs_id, existing_file_ids)
             print(f"   ✅ Удалено файлов: {len(existing_file_ids)}")
         except Exception as err:
             print(f"   ⚠️ Ошибка при удалении: {err}")
@@ -386,14 +397,14 @@ def main():
 
     # Привязываем к сто́ру
     print("\n➕ Привязываю файл к Vector Store…")
-    add_file_to_index(api_key, args.folder_id, args.vs_id, file_id)
+    add_file_to_index(api_key, args.folder_id, vs_id, file_id)
     print("   ✅ Файл привязан, началась индексация")
 
     # Ждем готовности
-    wait_ready(api_key, args.folder_id, args.vs_id, timeout_sec=args.timeout)
+    wait_ready(api_key, args.folder_id, vs_id, timeout_sec=args.timeout)
 
     print("\n🎉 Готово! Vector Store обновлён и сохранил тот же ID.")
-    print(f"vector_store_id = {args.vs_id}")
+    print(f"vector_store_id = {vs_id}")
 
 if __name__ == "__main__":
     main()
