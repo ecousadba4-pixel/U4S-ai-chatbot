@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from dataclasses import dataclass
 from typing import Any, Iterable
 from urllib.parse import urljoin
@@ -18,7 +17,7 @@ class ShelterCloudError(RuntimeError):
 
 
 class ShelterCloudAuthenticationError(ShelterCloudError):
-    """Не удалось получить access token."""
+    """Ошибка конфигурации или авторизации Shelter Cloud."""
 
 
 class ShelterCloudAvailabilityError(ShelterCloudError):
@@ -28,16 +27,16 @@ class ShelterCloudAvailabilityError(ShelterCloudError):
 @dataclass(frozen=True)
 class ShelterCloudConfig:
     base_url: str
-    client_id: str
-    client_secret: str
+    token: str
+    language: str = "ru"
     timeout: float = 30.0
 
     def is_configured(self) -> bool:
-        return bool(self.base_url and self.client_id and self.client_secret)
+        return bool(self.base_url and self.token)
 
 
 class ShelterCloudService:
-    """Клиент Shelter Cloud с кэшированием токена."""
+    """Клиент Shelter Cloud с использованием online API токена."""
 
     def __init__(
         self,
@@ -47,48 +46,57 @@ class ShelterCloudService:
     ) -> None:
         self._config = config
         self._session = session or requests.Session()
-        self._token: str | None = None
-        self._token_expire_at: float = 0.0
 
-    # ---- авторизация -----------------------------------------------------
+    # ---- общие HTTP-хелперы ---------------------------------------------
 
-    def authorize(self, *, force: bool = False) -> str:
+    def _request(
+        self,
+        path: str,
+        *,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
         if not self._config.is_configured():
             raise ShelterCloudAuthenticationError("Shelter Cloud не настроен")
 
-        now = time.time()
-        if not force and self._token and now < self._token_expire_at - 5.0:
-            return self._token
-
-        token_url = urljoin(self._config.base_url.rstrip("/") + "/", "oauth/token")
-        payload = {
-            "client_id": self._config.client_id,
-            "client_secret": self._config.client_secret,
-            "grant_type": "client_credentials",
+        url = urljoin(self._config.base_url.rstrip("/") + "/", path.lstrip("/"))
+        body = {
+            "token": self._config.token,
+            "language": self._config.language or "ru",
+            **payload,
         }
+
         try:
-            response = self._session.post(token_url, data=payload, timeout=self._config.timeout)
+            response = self._session.post(
+                url,
+                json=body,
+                timeout=self._config.timeout,
+            )
         except Exception as error:  # pragma: no cover - сеть может быть недоступна
-            logger.exception("Shelter Cloud auth request error")
-            raise ShelterCloudAuthenticationError(str(error)) from error
+            logger.exception("Shelter Cloud request error")
+            raise ShelterCloudAvailabilityError(str(error)) from error
 
         if response.status_code >= 400:
-            logger.error("Shelter Cloud auth HTTP %s: %s", response.status_code, response.text)
-            raise ShelterCloudAuthenticationError(
-                f"AUTH_HTTP_{response.status_code}: {response.text.strip()}"
+            logger.error(
+                "Shelter Cloud HTTP %s at %s: %s",
+                response.status_code,
+                path,
+                response.text,
+            )
+            raise ShelterCloudAvailabilityError(
+                f"HTTP_{response.status_code}: {response.text.strip()}"
             )
 
-        data = self._safe_json(response)
-        token = str(data.get("access_token", "")).strip()
-        expires_in = float(data.get("expires_in", 0) or 0)
-        if not token:
-            raise ShelterCloudAuthenticationError("Пустой access token")
-
-        self._token = token
-        self._token_expire_at = now + max(expires_in, 30.0)
-        return token
+        return self._safe_json(response)
 
     # ---- доступность номеров --------------------------------------------
+
+    def fetch_hotel_params(self) -> dict[str, Any]:
+        """Возвращает параметры отеля из Shelter Cloud."""
+
+        data = self._request("api/online/getHotelParams", payload={})
+        if isinstance(data.get("data"), dict):
+            return data["data"]
+        return data
 
     def fetch_availability(
         self,
@@ -99,45 +107,16 @@ class ShelterCloudService:
         children: int,
         children_ages: Iterable[int],
     ) -> list[dict[str, Any]]:
-        token = self.authorize()
-
-        availability_url = urljoin(
-            self._config.base_url.rstrip("/") + "/",
-            "api/v1/availability",
-        )
-        params = {
-            "arrivalDate": check_in,
-            "departureDate": check_out,
+        payload = {
+            "dateFrom": check_in,
+            "dateTo": check_out,
             "adults": adults,
             "children": children,
         }
         if children:
-            params["childrenAges"] = ",".join(str(max(0, int(age))) for age in children_ages)
+            payload["childrenAges"] = [max(0, int(age)) for age in children_ages]
 
-        headers = {"Authorization": f"Bearer {token}"}
-
-        try:
-            response = self._session.get(
-                availability_url,
-                params=params,
-                headers=headers,
-                timeout=self._config.timeout,
-            )
-        except Exception as error:  # pragma: no cover - сеть может быть недоступна
-            logger.exception("Shelter Cloud availability request error")
-            raise ShelterCloudAvailabilityError(str(error)) from error
-
-        if response.status_code >= 400:
-            logger.error(
-                "Shelter Cloud availability HTTP %s: %s",
-                response.status_code,
-                response.text,
-            )
-            raise ShelterCloudAvailabilityError(
-                f"AVAILABILITY_HTTP_{response.status_code}: {response.text.strip()}"
-            )
-
-        data = self._safe_json(response)
+        data = self._request("api/online/getAvailability", payload=payload)
         offers = self._extract_offers(data)
         offers.sort(key=lambda item: item.get("price", float("inf")))
         return offers
@@ -150,13 +129,28 @@ class ShelterCloudService:
             payload = response.json()
         except ValueError:
             return {}
-        return payload if isinstance(payload, dict) else {}
+        if isinstance(payload, dict):
+            return payload
+        if isinstance(payload, list):
+            return {"data": payload}
+        return {}
 
     @staticmethod
     def _extract_offers(payload: dict[str, Any]) -> list[dict[str, Any]]:
         offers: list[dict[str, Any]] = []
-        rooms = payload.get("rooms") or payload.get("items") or []
-        if not isinstance(rooms, list):
+        rooms: list[Any] = []
+        raw_rooms = payload.get("rooms") or payload.get("items")
+        if isinstance(raw_rooms, list):
+            rooms = raw_rooms
+        else:
+            data_block = payload.get("data")
+            if isinstance(data_block, list):
+                for chunk in data_block:
+                    if isinstance(chunk, list):
+                        rooms.extend(item for item in chunk if isinstance(item, dict))
+                    elif isinstance(chunk, dict):
+                        rooms.append(chunk)
+        if not rooms:
             return offers
 
         for room in rooms:
