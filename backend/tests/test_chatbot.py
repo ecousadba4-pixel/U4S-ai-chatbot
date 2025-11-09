@@ -1,92 +1,11 @@
 import asyncio
-import importlib
-import json
-import os
-import sys
 import time
-from pathlib import Path
 
 import pytest
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
-
 from backend.redis_gateway import REDIS_MAX_MESSAGES, parse_redis_args
 
-
-class DummyClient:
-    def __init__(self, config):
-        self.config = config
-        self.calls: list[dict] = []
-
-    def call_responses(self, payload: dict):
-        self.calls.append(payload)
-        return {
-            "output": [
-                {
-                    "role": "assistant",
-                    "content": [
-                        {"type": "output_text", "text": "Ответ"},
-                    ],
-                }
-            ]
-        }
-
-    # Vector Store helpers (not used in this test scenario)
-    def list_vector_files(self):  # pragma: no cover
-        return []
-
-    def fetch_vector_meta(self, file_id: str):  # pragma: no cover
-        return {}
-
-    def fetch_vector_content(self, file_id: str):  # pragma: no cover
-        return ""
-
-
-class DummyRedisGateway:
-    def __init__(self, *, max_messages: int = REDIS_MAX_MESSAGES):
-        self.max_messages = max_messages
-        self.storage: dict[str, list[dict]] = {}
-
-    def read_history(self, session_id: str) -> list[dict]:
-        return [dict(item) for item in self.storage.get(session_id, [])]
-
-    def write_history(self, session_id: str, messages, ttl: int | None = None) -> None:
-        limited = [dict(item) for item in messages][-self.max_messages :]
-        self.storage[session_id] = limited
-
-    def delete_history(self, session_id: str) -> None:
-        self.storage.pop(session_id, None)
-
-
-class DummyRequest:
-    def __init__(self, payload: dict):
-        self._payload = payload
-
-    async def json(self):
-        return self._payload
-
-    async def body(self):
-        return json.dumps(self._payload).encode("utf-8")
-
-
-@pytest.fixture()
-def app_module(monkeypatch):
-    module_name = "backend.app"
-    for key in ("YANDEX_API_KEY", "YANDEX_FOLDER_ID", "VECTOR_STORE_ID"):
-        os.environ[key] = f"test-{key.lower()}"
-
-    if module_name in sys.modules:
-        del sys.modules[module_name]
-
-    app_mod = importlib.import_module(module_name)
-    importlib.reload(app_mod)
-
-    dummy_client = DummyClient(app_mod.CONFIG)
-    monkeypatch.setattr(app_mod, "CLIENT", dummy_client)
-
-    return app_mod
+from backend.tests._helpers import DummyClient, DummyRedisGateway, DummyRequest
 
 
 def test_rag_payload_uses_vector_store(app_module):
