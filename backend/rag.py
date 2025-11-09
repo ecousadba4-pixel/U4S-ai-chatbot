@@ -135,9 +135,16 @@ class YandexClient:
 
 
 class VectorStoreGateway:
-    def __init__(self, client: YandexClient, ttl_seconds: float) -> None:
+    def __init__(
+        self,
+        client: YandexClient,
+        ttl_seconds: float,
+        *,
+        max_cached_files: int = 32,
+    ) -> None:
         self._client = client
         self._ttl_seconds = ttl_seconds
+        self._max_cached_files = max(1, int(max_cached_files))
         self._cached: tuple[float, list[dict[str, Any]]] | None = None
         self._file_cache: dict[str, tuple[float, tuple[dict[str, Any], str]]] = {}
 
@@ -145,8 +152,10 @@ class VectorStoreGateway:
         if not self._client.config.can_use_vector_store:
             return []
         now = time.monotonic()
-        if self._cached and now - self._cached[0] < self._ttl_seconds:
-            return self._cached[1]
+        cached = self._cached
+        if cached and now - cached[0] < self._ttl_seconds:
+            return cached[1]
+        self._cached = None
         files = self._client.list_vector_files()
         self._cached = (now, files)
         return files
@@ -157,18 +166,37 @@ class VectorStoreGateway:
 
         now = time.monotonic()
         cached = self._file_cache.get(file_id)
-        if cached and now - cached[0] < self._ttl_seconds:
-            return cached[1]
+        if cached:
+            cached_time, cached_value = cached
+            if now - cached_time < self._ttl_seconds:
+                return cached_value
+            self._file_cache.pop(file_id, None)
 
         meta = self._client.fetch_vector_meta(file_id)
         content = self._client.fetch_vector_content(file_id)
         stored = (meta if isinstance(meta, dict) else {}, content or "")
         self._file_cache[file_id] = (now, stored)
+        self._prune_file_cache()
         return stored
+
+    def clear_cache(self) -> None:
+        self._cached = None
+        self._file_cache.clear()
+
+    def _prune_file_cache(self) -> None:
+        excess = len(self._file_cache) - self._max_cached_files
+        if excess <= 0:
+            return
+        # удаляем самые старые записи по времени кэширования
+        sorted_items = sorted(self._file_cache.items(), key=lambda item: item[1][0])
+        for key, _ in sorted_items[:excess]:
+            self._file_cache.pop(key, None)
 
 
 CLIENT = YandexClient(CONFIG)
-VECTOR_STORE = VectorStoreGateway(CLIENT, CONFIG.cache_ttl)
+VECTOR_STORE = VectorStoreGateway(
+    CLIENT, CONFIG.cache_ttl, max_cached_files=CONFIG.cache_max_files
+)
 
 
 def _extract_responses_text(data: dict[str, Any]) -> str:
