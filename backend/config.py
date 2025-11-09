@@ -16,6 +16,18 @@ def _strip(value: str | None) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _parse_positive_int(raw: str | None, *, default: int) -> int:
+    if raw is None:
+        return default
+
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+
+    return max(1, value)
+
+
 def _iter_plain_origins(raw: str) -> Iterable[str]:
     for part in re.split(r"[,\s]+", raw):
         part = part.strip().strip('"').strip("'")
@@ -64,6 +76,7 @@ class AppConfig:
     context_max_chars: int = 2500
     context_per_file_limit: int = 12
     cache_ttl: float = 180.0
+    cache_max_files: int = 32
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -74,6 +87,9 @@ class AppConfig:
             allowed_origins=parse_allowed_origins(os.environ.get("ALLOWED_ORIGINS", "*")),
             redis_url=_strip(os.environ.get("REDIS_URL")),
             redis_args=parse_redis_args(os.environ.get("REDIS_ARGS")),
+            cache_max_files=_parse_positive_int(
+                os.environ.get("CACHE_MAX_FILES"), default=32
+            ),
         )
 
     @property
