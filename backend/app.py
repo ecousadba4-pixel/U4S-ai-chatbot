@@ -82,6 +82,7 @@ class AppConfig:
     redis_args: dict[str, Any] = field(default_factory=dict)
     http_timeout: float = 30.0
     completion_timeout: float = 60.0
+    input_max_tokens: int = 3500
     context_max_chars: int = 2500
     context_per_file_limit: int = 12
     cache_ttl: float = 180.0
@@ -237,6 +238,64 @@ def _normalize_messages_for_model(
         normalized.append({"role": role, "content": content})
 
     return normalized, normalized_question
+
+
+def _estimate_tokens(text: str) -> int:
+    text = text or ""
+    length = len(text)
+    if length == 0:
+        return 0
+    return max(1, (length + 3) // 4)
+
+
+def _trim_messages_for_model(
+    messages: Sequence[ChatModelMessage],
+    *,
+    max_tokens: int,
+    min_assistant_messages: int = 2,
+) -> list[ChatModelMessage]:
+    if not messages or max_tokens <= 0:
+        return list(messages)
+
+    trimmed: list[ChatModelMessage] = [
+        {
+            "role": str(message.get("role", "")),
+            "content": str(message.get("content", "")),
+        }
+        for message in messages
+    ]
+
+    required_ids: set[int] = set()
+
+    if trimmed and trimmed[0].get("role") == "system":
+        required_ids.add(id(trimmed[0]))
+
+    for index in range(len(trimmed) - 1, -1, -1):
+        if trimmed[index].get("role") == "user":
+            required_ids.add(id(trimmed[index]))
+            break
+
+    assistant_indices = [index for index, item in enumerate(trimmed) if item.get("role") == "assistant"]
+    for index in assistant_indices[-min_assistant_messages:]:
+        required_ids.add(id(trimmed[index]))
+
+    tokens = sum(_estimate_tokens(item.get("content", "")) for item in trimmed)
+
+    while tokens > max_tokens:
+        removable_index = None
+        for index, item in enumerate(trimmed):
+            if id(item) in required_ids:
+                continue
+            removable_index = index
+            break
+
+        if removable_index is None:
+            break
+
+        removed = trimmed.pop(removable_index)
+        tokens -= _estimate_tokens(removed.get("content", ""))
+
+    return trimmed
 
 
 def _replace_system_prompt(
@@ -472,9 +531,14 @@ def rag_via_responses(messages: Sequence[ChatModelMessage]) -> str:
             "Responses API недоступен: не заданы YANDEX_API_KEY/YANDEX_FOLDER_ID/VECTOR_STORE_ID",
         )
 
+    trimmed_messages = _trim_messages_for_model(
+        messages,
+        max_tokens=CONFIG.input_max_tokens,
+    )
+
     payload = {
         "model": f"gpt://{CONFIG.yandex_folder_id}/yandexgpt/latest",
-        "input": _messages_to_responses_input(messages),
+        "input": _messages_to_responses_input(trimmed_messages),
         "tools": [
             {"type": "file_search"},
             {"type": "web_search"},
@@ -605,9 +669,14 @@ def ask_with_vector_store_context(messages: Sequence[ChatModelMessage]) -> str:
 
     prepared_messages = _replace_system_prompt(messages, system_prompt)
 
+    trimmed_messages = _trim_messages_for_model(
+        prepared_messages,
+        max_tokens=CONFIG.input_max_tokens,
+    )
+
     payload = {
         "model": f"gpt://{CONFIG.yandex_folder_id}/yandexgpt/latest",
-        "input": _messages_to_responses_input(prepared_messages),
+        "input": _messages_to_responses_input(trimmed_messages),
         "temperature": 0.3,
         "top_p": 0.8,
         "max_output_tokens": 1800,
