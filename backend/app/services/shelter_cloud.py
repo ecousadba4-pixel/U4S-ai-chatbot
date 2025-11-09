@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-import datetime as dt
 import logging
 from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
-from urllib.parse import urljoin
+from typing import Any, Iterable
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+AVAILABILITY_URL = "https://pms.frontdesk24.ru/api/online/getVariants"
+HOTEL_PARAMS_URL = "https://pms.frontdesk24.ru/api/online/getHotelParams"
 
 
 class ShelterCloudError(RuntimeError):
@@ -27,13 +28,12 @@ class ShelterCloudAvailabilityError(ShelterCloudError):
 
 @dataclass(frozen=True)
 class ShelterCloudConfig:
-    base_url: str
     token: str
     language: str = "ru"
     timeout: float = 30.0
 
     def is_configured(self) -> bool:
-        return bool(self.base_url and self.token)
+        return bool(self.token)
 
 
 class ShelterCloudService:
@@ -57,14 +57,13 @@ class ShelterCloudService:
 
     def _request(
         self,
-        path: str,
+        url: str,
         *,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         if not self._config.is_configured():
             raise ShelterCloudAuthenticationError("Shelter Cloud не настроен")
 
-        url = urljoin(self._config.base_url.rstrip("/") + "/", path.lstrip("/"))
         body = {
             "token": self._config.token,
             "language": self._config.language or "ru",
@@ -85,7 +84,7 @@ class ShelterCloudService:
             logger.error(
                 "Shelter Cloud HTTP %s at %s: %s",
                 response.status_code,
-                path,
+                url,
                 response.text,
             )
             raise ShelterCloudAvailabilityError(
@@ -99,7 +98,7 @@ class ShelterCloudService:
     def fetch_hotel_params(self) -> dict[str, Any]:
         """Возвращает параметры отеля из Shelter Cloud."""
 
-        data = self._request("api/online/getHotelParams", payload={})
+        data = self._request(HOTEL_PARAMS_URL, payload={})
         if isinstance(data.get("data"), dict):
             return data["data"]
         return data
@@ -122,7 +121,7 @@ class ShelterCloudService:
         if children:
             payload["childrenAges"] = [max(0, int(age)) for age in children_ages]
 
-        data = self._request("api/online/getAvailability", payload=payload)
+        data = self._request(AVAILABILITY_URL, payload=payload)
         offers = self._extract_offers(data)
         offers.sort(key=lambda item: item.get("price", float("inf")))
         return offers
@@ -202,83 +201,10 @@ class ShelterCloudService:
                     }
                 )
         return offers
-
-
-class ShelterCloudOfflineService:
-    """Простейшая офлайн-имитация Shelter Cloud."""
-
-    def __init__(
-        self,
-        offers: Sequence[dict[str, Any]] | None = None,
-    ) -> None:
-        self._offers = list(offers) if offers is not None else list(DEFAULT_OFFLINE_OFFERS)
-
-    @staticmethod
-    def is_configured() -> bool:
-        return True
-
-    def fetch_availability(
-        self,
-        *,
-        check_in: str,
-        check_out: str,
-        adults: int,
-        children: int,
-        children_ages: Iterable[int],
-    ) -> list[dict[str, Any]]:
-        nights = self._calc_nights(check_in, check_out)
-        guests = max(1, int(adults) + int(children))
-        offers: list[dict[str, Any]] = []
-        for offer in self._offers:
-            price_per_night = float(offer.get("price_per_night", offer.get("price", 0)) or 0)
-            total_price = max(price_per_night, 0.0) * max(nights, 1)
-            extra_fee = max(0, guests - 2) * float(offer.get("extra_guest_fee", 0) or 0)
-            adjusted_price = total_price + extra_fee
-            offers.append(
-                {
-                    "name": offer.get("name", "Номер"),
-                    "price": round(adjusted_price, 2) if adjusted_price else offer.get("price"),
-                    "currency": offer.get("currency", "RUB"),
-                    "breakfast_included": bool(offer.get("breakfast_included", True)),
-                }
-            )
-        offers.sort(key=lambda item: item.get("price", float("inf")))
-        return offers
-
-    @staticmethod
-    def _calc_nights(check_in: str, check_out: str) -> int:
-        try:
-            start = dt.date.fromisoformat(check_in)
-            end = dt.date.fromisoformat(check_out)
-        except ValueError:
-            return 1
-        delta = (end - start).days
-        return delta if delta > 0 else 1
-
-
-DEFAULT_OFFLINE_OFFERS: tuple[dict[str, Any], ...] = (
-    {
-        "name": "Стандартный номер",
-        "price_per_night": 9900,
-        "currency": "RUB",
-        "breakfast_included": True,
-        "extra_guest_fee": 1200,
-    },
-    {
-        "name": "Семейный дом",
-        "price_per_night": 16800,
-        "currency": "RUB",
-        "breakfast_included": True,
-        "extra_guest_fee": 0,
-    },
-)
-
-
 __all__ = [
     "ShelterCloudService",
     "ShelterCloudConfig",
     "ShelterCloudError",
     "ShelterCloudAuthenticationError",
     "ShelterCloudAvailabilityError",
-    "ShelterCloudOfflineService",
 ]
