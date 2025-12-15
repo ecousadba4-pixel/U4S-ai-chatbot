@@ -1,9 +1,9 @@
 import asyncio
 import datetime as dt
 
-from backend.app.services import ShelterCloudAvailabilityError
-from backend.tests._helpers import DummyRedisGateway, DummyRequest
 from backend.app.dialogue import manager as manager_module
+from backend.app.services import ShelterCloudAvailabilityError
+from backend.tests._helpers import DummyRequest, DummyStorage
 
 
 class DummyShelterCloudService:
@@ -17,19 +17,19 @@ class DummyShelterCloudService:
 
 
 def _prepare_booking(app_module, monkeypatch, offers=None):
-    redis_gateway = DummyRedisGateway()
-    monkeypatch.setattr(app_module, "REDIS_GATEWAY", redis_gateway)
+    storage = DummyStorage()
+    monkeypatch.setattr(app_module, "HISTORY_STORAGE", storage)
 
     service = DummyShelterCloudService(offers or [])
     monkeypatch.setattr(app_module, "SHELTER_CLOUD_SERVICE", service)
-    app_module.BOOKING_DIALOGUE_MANAGER.storage = redis_gateway
+    app_module.BOOKING_DIALOGUE_MANAGER.storage = storage
     app_module.BOOKING_DIALOGUE_MANAGER.service = service
 
-    return redis_gateway, service
+    return storage, service
 
 
 def test_booking_flow_success(app_module, monkeypatch):
-    redis_gateway, service = _prepare_booking(
+    storage, service = _prepare_booking(
         app_module,
         monkeypatch,
         offers=[
@@ -94,14 +94,14 @@ def test_booking_flow_success(app_module, monkeypatch):
     assert last_call["children"] == 1
     assert last_call["children_ages"] == [5]
 
-    context = redis_gateway.context_storage[session_id]
+    context = storage.context_storage[session_id]
     assert context["intent"] == "booking_inquiry"
     assert context["booking"]["adults"] == 2
     assert context["booking"]["children_ages"] == [5]
 
 
 def test_booking_flow_handles_no_rooms(app_module, monkeypatch):
-    redis_gateway, service = _prepare_booking(app_module, monkeypatch, offers=[])
+    storage, service = _prepare_booking(app_module, monkeypatch, offers=[])
 
     session_id = "no-rooms"
 
@@ -128,7 +128,7 @@ def test_booking_flow_handles_no_rooms(app_module, monkeypatch):
 
 
 def test_booking_accepts_various_date_formats(app_module, monkeypatch):
-    redis_gateway, _service = _prepare_booking(app_module, monkeypatch, offers=[])
+    storage, _service = _prepare_booking(app_module, monkeypatch, offers=[])
 
     class FixedDate(dt.date):
         @classmethod
@@ -160,13 +160,13 @@ def test_booking_accepts_various_date_formats(app_module, monkeypatch):
     assert "28.11.2025" in response["answer"]
     assert "взросл" in response["answer"].lower()
 
-    context = redis_gateway.context_storage[session_id]
+    context = storage.context_storage[session_id]
     assert context["booking"]["check_in"] == "2025-11-25"
     assert context["booking"]["check_out"] == "2025-11-28"
 
 
 def test_booking_accepts_relative_dates(app_module, monkeypatch):
-    redis_gateway, _service = _prepare_booking(app_module, monkeypatch, offers=[])
+    storage, _service = _prepare_booking(app_module, monkeypatch, offers=[])
 
     class FixedDate(dt.date):
         @classmethod
@@ -197,14 +197,14 @@ def test_booking_accepts_relative_dates(app_module, monkeypatch):
     )
     assert "21.11.2025" in response["answer"]
 
-    context = redis_gateway.context_storage[session_id]
+    context = storage.context_storage[session_id]
     assert context["booking"]["check_in"] == "2025-11-20"
     assert context["booking"]["check_out"] == "2025-11-21"
 
 
 def test_booking_flow_handles_api_errors(app_module, monkeypatch):
-    redis_gateway = DummyRedisGateway()
-    monkeypatch.setattr(app_module, "REDIS_GATEWAY", redis_gateway)
+    storage = DummyStorage()
+    monkeypatch.setattr(app_module, "HISTORY_STORAGE", storage)
 
     class FailingShelterService:
         def fetch_availability(self, **kwargs):
@@ -212,7 +212,7 @@ def test_booking_flow_handles_api_errors(app_module, monkeypatch):
 
     service = FailingShelterService()
     monkeypatch.setattr(app_module, "SHELTER_CLOUD_SERVICE", service)
-    app_module.BOOKING_DIALOGUE_MANAGER.storage = redis_gateway
+    app_module.BOOKING_DIALOGUE_MANAGER.storage = storage
     app_module.BOOKING_DIALOGUE_MANAGER.service = service
 
     session_id = "error"
@@ -241,7 +241,7 @@ def test_booking_flow_handles_api_errors(app_module, monkeypatch):
 
 
 def test_booking_online_redirect_branch(app_module, monkeypatch):
-    redis_gateway, service = _prepare_booking(app_module, monkeypatch, offers=[])
+    storage, service = _prepare_booking(app_module, monkeypatch, offers=[])
 
     session_id = "redirect"
 
@@ -262,7 +262,7 @@ def test_booking_online_redirect_branch(app_module, monkeypatch):
 
 
 def test_booking_more_offer_requests(app_module, monkeypatch):
-    redis_gateway, service = _prepare_booking(
+    storage, service = _prepare_booking(
         app_module,
         monkeypatch,
         offers=[
@@ -342,7 +342,7 @@ def test_booking_more_offer_requests(app_module, monkeypatch):
     assert "все доступные предложения" in no_more_response["answer"].lower()
     assert no_more_response["branch"] == "booking_price_chat"
 
-    context = redis_gateway.context_storage[session_id]
+    context = storage.context_storage[session_id]
     assert context["last_offer_index"] == 3
 
 

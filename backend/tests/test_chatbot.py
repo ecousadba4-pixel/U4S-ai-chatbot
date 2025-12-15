@@ -1,12 +1,9 @@
 import asyncio
 import time
-from typing import Any
 
 import pytest
 
-import backend.redis_gateway as redis_gateway_module
-
-from backend.tests._helpers import DummyClient, DummyRedisGateway, DummyRequest
+from backend.tests._helpers import DummyClient, DummyRequest, DummyStorage
 
 
 def test_rag_payload_uses_vector_store(app_module):
@@ -50,48 +47,13 @@ def test_vector_store_fallback_handles_api_errors(app_module, monkeypatch):
     assert answer == "Извините, сейчас не могу ответить. Попробуйте позже."
 
 
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        ("", {}),
-        (None, {}),
-        ("{\"password\": \"secret\", \"ssl\": true}", {"password": "secret", "ssl": True}),
-        ("password=secret&db=1", {"password": "secret", "db": 1}),
-        ("password=secret db=2", {"password": "secret", "db": 2}),
-    ],
-)
-def test_parse_redis_args_handles_multiple_formats(raw, expected):
-    assert redis_gateway_module.parse_redis_args(raw) == expected
-
-
-def test_create_redis_client_adds_default_scheme(monkeypatch):
-    captured: dict[str, Any] = {}
-
-    class DummyRedis:
-        @staticmethod
-        def from_url(url: str, **kwargs: Any) -> str:
-            captured["url"] = url
-            captured["kwargs"] = kwargs
-            return "client"
-
-    dummy_module = type("DummyRedisModule", (), {"Redis": DummyRedis})
-    monkeypatch.setattr(redis_gateway_module, "redis", dummy_module)
-
-    client = redis_gateway_module.create_redis_client("internal-redis:6379", {"db": 2})
-
-    assert client == "client"
-    assert captured["url"] == "redis://internal-redis:6379"
-    assert captured["kwargs"]["db"] == 2
-    assert captured["kwargs"]["decode_responses"] is True
-
-
 def test_chat_post_merges_and_persists_history(app_module, monkeypatch):
-    redis_gateway = DummyRedisGateway(max_messages=4)
-    redis_gateway.storage["abc"] = [
+    storage = DummyStorage(max_messages=4)
+    storage.storage["abc"] = [
         {"role": "user", "content": "Привет", "timestamp": 10.0},
         {"role": "assistant", "content": "Здравствуйте", "timestamp": 11.0},
     ]
-    monkeypatch.setattr(app_module, "REDIS_GATEWAY", redis_gateway)
+    monkeypatch.setattr(app_module, "HISTORY_STORAGE", storage)
 
     payload = {
         "sessionId": "abc",
@@ -105,7 +67,7 @@ def test_chat_post_merges_and_persists_history(app_module, monkeypatch):
     response = asyncio.run(app_module.chat_post(DummyRequest(payload)))
     assert response["answer"] == "Ответ"
 
-    history = redis_gateway.storage["abc"]
+    history = storage.storage["abc"]
     assert [msg["role"] for msg in history] == ["user", "assistant", "user", "assistant"]
     assert history[-2]["content"] == app_module.normalize_question(payload["question"])
     assert history[-1]["content"] == "Ответ"
@@ -113,25 +75,25 @@ def test_chat_post_merges_and_persists_history(app_module, monkeypatch):
 
 
 def test_chat_post_returns_hint_for_empty_question(app_module, monkeypatch):
-    redis_gateway = DummyRedisGateway()
-    monkeypatch.setattr(app_module, "REDIS_GATEWAY", redis_gateway)
+    storage = DummyStorage()
+    monkeypatch.setattr(app_module, "HISTORY_STORAGE", storage)
 
     payload = {"sessionId": "abc", "question": "  \t\n"}
 
     response = asyncio.run(app_module.chat_post(DummyRequest(payload)))
 
     assert response["answer"] == app_module.EMPTY_QUESTION_ANSWER
-    assert "abc" not in redis_gateway.storage
+    assert "abc" not in storage.storage
     assert app_module.CLIENT.calls == []
 
 
 def test_chat_reset_endpoint_clears_history(app_module, monkeypatch):
-    redis_gateway = DummyRedisGateway()
-    redis_gateway.storage["session"] = [
+    storage = DummyStorage()
+    storage.storage["session"] = [
         {"role": "user", "content": "Привет", "timestamp": time.time()},
     ]
-    monkeypatch.setattr(app_module, "REDIS_GATEWAY", redis_gateway)
+    monkeypatch.setattr(app_module, "HISTORY_STORAGE", storage)
 
     response = asyncio.run(app_module.chat_reset(DummyRequest({"sessionId": "session"})))
     assert response == {"ok": True}
-    assert "session" not in redis_gateway.storage
+    assert "session" not in storage.storage

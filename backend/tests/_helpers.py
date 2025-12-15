@@ -4,12 +4,11 @@ import os
 import sys
 from pathlib import Path
 
-from backend.redis_gateway import REDIS_MAX_MESSAGES
-
-
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+
+from backend.storage import MAX_HISTORY_MESSAGES
 
 
 class DummyClient:
@@ -40,8 +39,8 @@ class DummyClient:
         return ""
 
 
-class DummyRedisGateway:
-    def __init__(self, *, max_messages: int = REDIS_MAX_MESSAGES):
+class DummyStorage:
+    def __init__(self, *, max_messages: int = MAX_HISTORY_MESSAGES):
         self.max_messages = max_messages
         self.storage: dict[str, list[dict]] = {}
         self.context_storage: dict[str, dict] = {}
