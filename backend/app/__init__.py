@@ -27,11 +27,7 @@ from backend.rag import (
     build_context_from_vector_store as rag_build_context_from_vector_store,
     rag_via_responses as rag_rag_via_responses,
 )
-from backend.redis_gateway import (
-    REDIS_MAX_MESSAGES,
-    RedisHistoryGateway,
-    create_redis_client,
-)
+from backend.storage import InMemoryStorage, MAX_HISTORY_MESSAGES
 
 from .chat.handlers import BookingIntentHandler
 from .dialogue.manager import BookingDialogueManager
@@ -47,9 +43,7 @@ DEFAULT_ERROR_ANSWER = "Извините, сейчас не могу ответ�
 EMPTY_QUESTION_ANSWER = "Пожалуйста, сформулируйте вопрос."
 
 
-REDIS_GATEWAY = RedisHistoryGateway(
-    create_redis_client(CONFIG.redis_url, CONFIG.redis_args)
-)
+HISTORY_STORAGE = InMemoryStorage()
 
 SHELTER_CLOUD_CONFIG = ShelterCloudConfig(
     token=CONFIG.shelter_cloud_token,
@@ -61,7 +55,7 @@ if not SHELTER_CLOUD_CONFIG.is_configured():
 
 SHELTER_CLOUD_SERVICE = ShelterCloudService(SHELTER_CLOUD_CONFIG)
 BOOKING_DIALOGUE_MANAGER = BookingDialogueManager(
-    storage=REDIS_GATEWAY,
+    storage=HISTORY_STORAGE,
     service=SHELTER_CLOUD_SERVICE,
 )
 BOOKING_INTENT_HANDLER = BookingIntentHandler(BOOKING_DIALOGUE_MANAGER)
@@ -96,7 +90,7 @@ def build_context_from_vector_store(question: str) -> str:
 
 
 def _booking_handler() -> BookingIntentHandler:
-    BOOKING_DIALOGUE_MANAGER.storage = REDIS_GATEWAY
+    BOOKING_DIALOGUE_MANAGER.storage = HISTORY_STORAGE
     return BOOKING_INTENT_HANDLER
 
 
@@ -119,7 +113,7 @@ def _persist_history(
             "timestamp": now + 1e-3,
         },
     ]
-    REDIS_GATEWAY.write_history(session_id, stored_history[-limit:])
+    HISTORY_STORAGE.write_history(session_id, stored_history[-limit:])
 
 
 def _produce_answer(messages: Sequence[ChatModelMessage], *, log_prefix: str) -> str:
@@ -217,16 +211,16 @@ async def chat_post(request: Request) -> dict[str, str]:
     question = payload.get("question", "")
     reset_requested = bool(payload.get("reset"))
 
-    history_limit = getattr(REDIS_GATEWAY, "max_messages", REDIS_MAX_MESSAGES)
+    history_limit = getattr(HISTORY_STORAGE, "max_messages", MAX_HISTORY_MESSAGES)
 
-    redis_history: list[ChatHistoryItem] = []
+    stored_history: list[ChatHistoryItem] = []
     if session_id:
         if reset_requested:
-            REDIS_GATEWAY.delete_history(session_id)
+            HISTORY_STORAGE.delete_history(session_id)
         else:
-            redis_history = REDIS_GATEWAY.read_history(session_id)
+            stored_history = HISTORY_STORAGE.read_history(session_id)
 
-    merged_history = merge_histories(redis_history, client_history, limit=history_limit)
+    merged_history = merge_histories(stored_history, client_history, limit=history_limit)
 
     conversation = build_conversation_messages(
         merged_history,
@@ -281,7 +275,7 @@ async def chat_reset(request: Request) -> dict[str, bool]:
     session_id = payload.get("sessionId", "")
 
     if session_id:
-        REDIS_GATEWAY.delete_history(session_id)
+        HISTORY_STORAGE.delete_history(session_id)
         BOOKING_DIALOGUE_MANAGER.reset(session_id)
 
     return {"ok": True}

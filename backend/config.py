@@ -6,11 +6,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-if __package__:
-    from .redis_gateway import parse_redis_args
-else:
-    from redis_gateway import parse_redis_args
-
 
 def _strip(value: str | None) -> str:
     return value.strip() if isinstance(value, str) else ""
@@ -68,8 +63,6 @@ class AppConfig:
     yandex_folder_id: str
     vector_store_id: str
     allowed_origins: tuple[str, ...]
-    redis_url: str = ""
-    redis_args: dict[str, Any] = field(default_factory=dict)
     http_timeout: float = 30.0
     completion_timeout: float = 60.0
     input_max_tokens: int = 3500
@@ -87,8 +80,6 @@ class AppConfig:
             yandex_folder_id=_strip(os.environ.get("YANDEX_FOLDER_ID")),
             vector_store_id=_strip(os.environ.get("VECTOR_STORE_ID")),
             allowed_origins=parse_allowed_origins(os.environ.get("ALLOWED_ORIGINS", "*")),
-            redis_url=_strip(os.environ.get("REDIS_URL")),
-            redis_args=parse_redis_args(os.environ.get("REDIS_ARGS")),
             cache_max_files=_parse_positive_int(
                 os.environ.get("CACHE_MAX_FILES"), default=32
             ),
@@ -107,10 +98,6 @@ class AppConfig:
     @property
     def can_use_vector_store(self) -> bool:
         return bool(self.has_api_credentials and self.vector_store_id)
-
-    @property
-    def has_redis(self) -> bool:
-        return bool(self.redis_url)
 
 
 CONFIG = AppConfig.from_env()
