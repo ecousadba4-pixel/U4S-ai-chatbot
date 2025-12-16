@@ -12,6 +12,7 @@ from app.chat.composer import ChatComposer
 from app.chat.intent import detect_intent
 from app.core.config import get_settings
 from app.core.security import verify_api_key
+from app.utils.text import normalize_chat_text
 from app.session import get_session_store
 
 router = APIRouter(prefix="/chat", dependencies=[Depends(verify_api_key)])
@@ -75,7 +76,9 @@ async def chat_endpoint(
     debug.setdefault("shelter_error", None)
     if debug.get("shelter_called"):
         debug["llm_called"] = False
-    response_payload: dict[str, Any] = {"answer": result.get("answer", "")}
+    normalized_answer = normalize_chat_text(result.get("answer", ""))
+
+    response_payload: dict[str, Any] = {"answer": normalized_answer}
     # В проде debug скрыт по умолчанию и включается только через INCLUDE_DEBUG.
     if settings.include_debug:
         response_payload["debug"] = debug
