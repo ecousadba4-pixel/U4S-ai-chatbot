@@ -1,14 +1,14 @@
-from __future__ import annotations
-
-import json
-from typing import Any, Dict, List
+from typing import Any
 
 import asyncpg
 
 from app.booking.service import BookingQuoteService
 from app.booking.slot_filling import SlotFiller, SlotState
+from app.core.config import get_settings
+from app.db.queries.faq import search_faq
 from app.llm.deepseek_client import DeepSeekClient
-from app.llm.prompts import BOOKING_SUMMARY_PROMPT, FACTS_PROMPT
+from app.llm.prompts import FACTS_PROMPT
+from app.rag.context_builder import build_context
 from app.rag.qdrant_client import QdrantClient
 from app.rag.retriever import retrieve_context
 
@@ -126,15 +126,35 @@ class ChatComposer:
         }
 
     async def handle_general(self, text: str) -> dict[str, Any]:
-        context = await retrieve_context(pool=self._pool, qdrant=self._qdrant, question=text)
+        settings = get_settings()
+        faq_hits = await search_faq(self._pool, query=text, limit=3, min_similarity=0.35)
+
+        rag_hits = await retrieve_context(query=text, client=self._qdrant)
+        context_text = build_context(
+            facts_hits=rag_hits.get("facts_hits", []),
+            files_hits=rag_hits.get("files_hits", []),
+            faq_hits=faq_hits,
+        )
+
+        system_prompt = FACTS_PROMPT
+        if context_text:
+            system_prompt = f"{FACTS_PROMPT}\n\n{context_text}"
+
         messages = [
-            {"role": "system", "content": f"{FACTS_PROMPT}\n\n{context}"},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": text},
         ]
         answer = await self._llm.chat(model="deepseek-chat", messages=messages)
         return {
             "answer": answer or "Нет данных в базе знаний.",
-            "debug": {"intent": "general", "context_length": len(context)},
+            "debug": {
+                "intent": "general",
+                "context_length": len(context_text),
+                "facts_hits": len(rag_hits.get("facts_hits", [])),
+                "files_hits": len(rag_hits.get("files_hits", [])),
+                "faq_hits": len(faq_hits),
+                "rag_min_facts": settings.rag_min_facts,
+            },
         }
 
 
