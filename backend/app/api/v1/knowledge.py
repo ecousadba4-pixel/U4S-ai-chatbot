@@ -34,17 +34,17 @@ class KnowledgeResponse(BaseModel):
 
 @router.post("", response_model=KnowledgeResponse)
 async def knowledge_search(
-    payload: KnowledgeRequest,
+    request: KnowledgeRequest,
     pool: asyncpg.Pool = Depends(get_pool),
     qdrant: QdrantClient = Depends(get_qdrant_client),
 ) -> KnowledgeResponse:
     rag_hits = await gather_rag_data(
-        query=payload.query,
+        query=request.query,
         client=qdrant,
         pool=pool,
-        facts_limit=payload.limit,
-        files_limit=payload.limit,
-        faq_limit=min(5, payload.limit),
+        facts_limit=request.limit,
+        files_limit=request.limit,
+        faq_limit=min(5, request.limit),
     )
 
     results: list[KnowledgeResult] = []
@@ -57,10 +57,10 @@ async def knowledge_search(
         ]
 
     for hit in qdrant_hits:
-        payload = hit.get("payload") if isinstance(hit.get("payload"), dict) else {}
-        content = payload.get("text") or hit.get("text") or ""
-        title = payload.get("title") or hit.get("title")
-        source = payload.get("source") or hit.get("source")
+        hit_payload = hit.get("payload") if isinstance(hit.get("payload"), dict) else {}
+        content = hit_payload.get("text") or hit.get("text") or ""
+        title = hit_payload.get("title") or hit.get("title")
+        source = hit_payload.get("source") or hit.get("source")
         if not title:
             if isinstance(source, str) and source:
                 title = source
@@ -69,7 +69,7 @@ async def knowledge_search(
 
         results.append(
             KnowledgeResult(
-                type=(payload.get("type") or hit.get("type") or "fact"),
+                type=(hit_payload.get("type") or hit.get("type") or "fact"),
                 title=title,
                 content=content,
                 source=source,
@@ -89,7 +89,7 @@ async def knowledge_search(
         )
 
     results.sort(key=lambda item: (item.type != "faq", -item.score))
-    results = results[: payload.limit]
+    results = results[: request.limit]
 
     debug: dict[str, Any] = {
         "facts_hits": len(rag_hits.get("facts_hits", [])),
