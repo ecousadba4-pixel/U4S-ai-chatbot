@@ -6,7 +6,7 @@ import pytest
 from backend.tests._helpers import DummyClient, DummyRequest, DummyStorage
 
 
-def test_rag_payload_uses_deepseek(app_module):
+def test_rag_payload_uses_amvera_model(app_module):
     client: DummyClient = app_module.CLIENT  # type: ignore[assignment]
 
     messages = [
