@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from app.booking.entities import extract_booking_entities_ru
 from app.chat.composer import ChatComposer
 from app.chat.intent import detect_intent
+from app.core.config import get_settings
 from app.core.security import verify_api_key
 
 router = APIRouter(prefix="/chat", dependencies=[Depends(verify_api_key)])
@@ -26,13 +27,15 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     answer: str
-    debug: dict[str, Any]
+    debug: dict[str, Any] | None = None
 
 
-@router.post("", response_model=ChatResponse)
+@router.post("", response_model=ChatResponse, response_model_exclude_none=True)
 async def chat_endpoint(
     payload: ChatRequest, composer: ChatComposer = Depends(get_composer)
 ) -> ChatResponse:
+    settings = get_settings()
+
     now_date = datetime.now(ZoneInfo("UTC")).date()
     entities = extract_booking_entities_ru(payload.message, now_date=now_date, tz="UTC")
     session_id = payload.session_id or "anonymous"
@@ -57,4 +60,8 @@ async def chat_endpoint(
     debug.setdefault("shelter_error", None)
     if debug.get("shelter_called"):
         debug["llm_called"] = False
-    return ChatResponse(answer=result.get("answer", ""), debug=debug)
+    response_payload: dict[str, Any] = {"answer": result.get("answer", "")}
+    # В проде debug скрыт по умолчанию и включается только через INCLUDE_DEBUG.
+    if settings.include_debug:
+        response_payload["debug"] = debug
+    return ChatResponse(**response_payload)
