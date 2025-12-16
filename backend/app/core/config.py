@@ -22,7 +22,11 @@ class Settings(BaseSettings):
     rag_files_limit: int = Field(4, alias="RAG_FILES_LIMIT")
     rag_max_context_chars: int = Field(6000, alias="RAG_MAX_CONTEXT_CHARS")
     rag_min_facts: int = Field(4, alias="RAG_MIN_FACTS")
-    deepseek_api_key: str = Field(..., alias="DEEPSEEK_API_KEY")
+    amvera_api_token: str = Field(..., alias="AMVERA_API_TOKEN")
+    amvera_api_url: AnyHttpUrl = Field(
+        "https://llm.amvera.ai/v1", alias="AMVERA_API_URL"
+    )
+    amvera_model: str = Field("deepseek-chat", alias="AMVERA_MODEL")
     shelter_cloud_token: str = Field(..., alias="SHELTER_CLOUD_TOKEN")
 
     llm_dry_run: bool = Field(False, alias="LLM_DRY_RUN")

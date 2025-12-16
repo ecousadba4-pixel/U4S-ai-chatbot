@@ -12,7 +12,7 @@ from app.chat.composer import ChatComposer, InMemoryConversationStateStore
 from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.db.pool import get_pool, lifespan_pool
-from app.llm.deepseek_client import DeepSeekClient
+from app.llm.amvera_client import AmveraLLMClient
 from app.rag.qdrant_client import QdrantClient, get_qdrant_client
 
 settings = get_settings()
@@ -21,7 +21,7 @@ setup_logging()
 state_store = InMemoryConversationStateStore()
 slot_filler = SlotFiller()
 qdrant_client = get_qdrant_client()
-llm_client = DeepSeekClient()
+llm_client = AmveraLLMClient()
 shelter_service = ShelterCloudService()
 booking_service = BookingQuoteService(shelter_service)
 

@@ -6,7 +6,7 @@ from app.booking.service import BookingQuoteService
 from app.booking.slot_filling import SlotFiller, SlotState
 from app.core.config import get_settings
 from app.db.queries.faq import search_faq
-from app.llm.deepseek_client import DeepSeekClient
+from app.llm.amvera_client import AmveraLLMClient
 from app.llm.prompts import FACTS_PROMPT
 from app.rag.context_builder import build_context
 from app.rag.qdrant_client import QdrantClient
@@ -44,7 +44,7 @@ class ChatComposer:
         *,
         pool: asyncpg.Pool,
         qdrant: QdrantClient,
-        llm: DeepSeekClient,
+        llm: AmveraLLMClient,
         slot_filler: SlotFiller,
         booking_service: BookingQuoteService,
         store: ConversationStateStore,
@@ -144,7 +144,7 @@ class ChatComposer:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": text},
         ]
-        answer = await self._llm.chat(model="deepseek-chat", messages=messages)
+        answer = await self._llm.chat(model=settings.amvera_model, messages=messages)
         return {
             "answer": answer or "Нет данных в базе знаний.",
             "debug": {

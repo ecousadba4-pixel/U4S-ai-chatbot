@@ -8,26 +8,35 @@ from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt,
 from app.core.config import get_settings
 
 
-class DeepSeekClient:
-    """Клиент для DeepSeek API."""
+class AmveraLLMClient:
+    """Клиент для Amvera API c проксированным доступом к DeepSeek."""
 
-    def __init__(self, *, api_key: str | None = None, timeout: float | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        api_token: str | None = None,
+        api_url: str | None = None,
+        model: str | None = None,
+        timeout: float | None = None,
+    ) -> None:
         settings = get_settings()
-        self._api_key = api_key or settings.deepseek_api_key
+        self._api_token = api_token or settings.amvera_api_token
+        self._api_url = (api_url or str(settings.amvera_api_url)).rstrip("/")
+        self._model = model or settings.amvera_model
         self._timeout = timeout or settings.completion_timeout
         self._client = httpx.AsyncClient(timeout=self._timeout)
 
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def chat(self, *, model: str, messages: Sequence[dict[str, str]]) -> str:
+    async def chat(self, *, model: str | None = None, messages: Sequence[dict[str, str]]) -> str:
         settings = get_settings()
         if settings.llm_dry_run:
             return "[LLM отключён: режим dry-run]"
 
-        headers = {"Authorization": f"Bearer {self._api_key}"}
-        payload = {"model": model, "messages": list(messages)}
-        url = "https://api.deepseek.com/chat/completions"
+        headers = {"Authorization": f"Bearer {self._api_token}"}
+        payload = {"model": model or self._model, "messages": list(messages)}
+        url = f"{self._api_url}/chat/completions"
 
         async for attempt in AsyncRetrying(
             reraise=True,
@@ -61,4 +70,4 @@ class DeepSeekClient:
         return ""
 
 
-__all__ = ["DeepSeekClient"]
+__all__ = ["AmveraLLMClient"]
