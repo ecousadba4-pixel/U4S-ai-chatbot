@@ -67,37 +67,46 @@ class ChatComposer:
         self._settings = settings or get_settings()
 
     async def handle_booking_calculation(
-        self, entities: BookingEntities
+        self, session_id: str, text: str, entities: BookingEntities
     ) -> dict[str, Any]:
+        state = self._store.get(session_id) or SlotState()
+        state = self._slot_filler.extract(text, state)
+        self._apply_children_answer(text, state)
+
+        if entities.checkin and not state.check_in:
+            state.check_in = entities.checkin
+        if entities.checkout and not state.check_out:
+            state.check_out = entities.checkout
+        if entities.adults is not None and state.adults is None:
+            state.adults = entities.adults
+        if entities.children is not None and state.children is None:
+            state.children = entities.children
+        state.errors = self._slot_filler._validate_dates(state)  # noqa: SLF001
+
+        missing = self._slot_filler.missing_slots(state)
+        self._store.set(session_id, state)
         debug: dict[str, Any] = {
             "intent": "booking_calculation",
             "booking_entities": entities.__dict__,
-            "missing_fields": entities.missing_fields,
+            "missing_fields": missing,
             "shelter_called": False,
             "shelter_latency_ms": 0,
             "shelter_error": None,
             "llm_called": False,
         }
 
-        if entities.missing_fields:
-            questions = []
-            prompts = {
-                "checkin": "Уточните дату заезда, пожалуйста",
-                "checkout": "Уточните дату выезда, пожалуйста",
-                "adults": "Сколько взрослых будет проживать?",
-            }
-            for field in entities.missing_fields:
-                questions.append(prompts.get(field, field))
-            polite_request = "; ".join(questions)
-            return {"answer": polite_request, "debug": debug}
+        next_slot = self._next_missing_slot(state)
+        if next_slot:
+            question = self._question_for_slot(next_slot, state)
+            return {"answer": question, "debug": debug}
 
-        guests = Guests(adults=entities.adults or 0, children=entities.children)
+        guests = Guests(adults=state.adults or 0, children=state.children or 0)
 
         started = time.perf_counter()
         try:
             offers = await self._booking_service.get_quotes(
-                check_in=entities.checkin or "",
-                check_out=entities.checkout or "",
+                check_in=state.check_in or "",
+                check_out=state.check_out or "",
                 guests=guests,
             )
             debug["shelter_called"] = True
@@ -112,25 +121,62 @@ class ChatComposer:
                 "debug": debug,
             }
 
+        self._store.clear(session_id)
+
         if not offers:
             return {
                 "answer": "К сожалению, не удалось найти доступные варианты на указанные даты.",
                 "debug": debug,
             }
 
+        entities.checkin = state.check_in or entities.checkin
+        entities.checkout = state.check_out or entities.checkout
+        entities.adults = state.adults
+        entities.children = state.children
+        entities.missing_fields = []
+
         answer = format_shelter_quote(entities, offers)
 
         return {"answer": answer, "debug": debug}
 
+    def _next_missing_slot(self, state: SlotState) -> str | None:
+        if not state.check_in or not state.check_out:
+            return "dates"
+        if state.adults is None:
+            return "adults"
+        if state.children is None:
+            return "children"
+        return None
+
+    def _question_for_slot(self, slot: str, state: SlotState) -> str:
+        prompts = {
+            "dates": "На какие даты вы планируете заезд?",
+            "adults": "Сколько взрослых будет проживать?",
+            "children": "Будут ли дети до 12 лет?",
+        }
+        question = prompts.get(slot, "Уточните детали бронирования, пожалуйста")
+        if state.errors:
+            return f"{' '.join(state.errors)} {question}".strip()
+        return question
+
+    def _apply_children_answer(self, text: str, state: SlotState) -> None:
+        if state.children is not None:
+            return
+        lowered = text.strip().lower()
+        negative_children = {"нет", "неа", "нету", "не будет", "без детей"}
+        if lowered in negative_children or "нет детей" in lowered:
+            state.children = 0
+
     async def handle_booking(self, session_id: str, text: str) -> dict[str, Any]:
         state = self._store.get(session_id) or SlotState()
         state = self._slot_filler.extract(text, state)
-        clarification = self._slot_filler.clarification(state)
+        self._apply_children_answer(text, state)
         missing = self._slot_filler.missing_slots(state)
         self._store.set(session_id, state)
 
-        if clarification:
-            question = clarification
+        next_slot = self._next_missing_slot(state)
+        if next_slot:
+            question = self._question_for_slot(next_slot, state)
             return {
                 "answer": question,
                 "debug": {
