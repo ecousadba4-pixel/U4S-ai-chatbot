@@ -1,21 +1,5 @@
 (() => {
   function resolveDefaultEndpoint() {
-    if (
-      typeof window !== "undefined" &&
-      typeof window.CHATBOT_API_BASE === "string" &&
-      window.CHATBOT_API_BASE.trim()
-    ) {
-      return window.CHATBOT_API_BASE.trim();
-    }
-
-    if (typeof window !== "undefined" && window.location && window.location.origin) {
-      return `${window.location.origin}/api/chat`;
-    }
-
-    if (typeof location !== "undefined" && location.origin) {
-      return `${location.origin}/api/chat`;
-    }
-
     return "/api/chat";
   }
 
