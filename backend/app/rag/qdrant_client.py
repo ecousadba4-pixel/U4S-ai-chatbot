@@ -26,9 +26,12 @@ class QdrantClient:
         collection: str,
         vector: Iterable[float],
         limit: int = 5,
+        query_filter: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         url = f"{self._base_url}/collections/{collection}/points/search"
-        payload = {"vector": list(vector), "limit": limit}
+        payload: dict[str, Any] = {"vector": list(vector), "limit": limit}
+        if query_filter:
+            payload["filter"] = query_filter
 
         async for attempt in AsyncRetrying(
             reraise=True,
@@ -49,4 +52,14 @@ class QdrantClient:
         return []
 
 
-__all__ = ["QdrantClient"]
+_CLIENT: QdrantClient | None = None
+
+
+def get_qdrant_client() -> QdrantClient:
+    global _CLIENT
+    if _CLIENT is None:
+        _CLIENT = QdrantClient()
+    return _CLIENT
+
+
+__all__ = ["QdrantClient", "get_qdrant_client"]

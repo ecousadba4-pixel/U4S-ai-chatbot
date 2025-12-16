@@ -11,7 +11,17 @@ class Settings(BaseSettings):
     """Конфигурация приложения на основе переменных окружения."""
 
     database_url: str = Field(..., alias="DATABASE_URL")
-    qdrant_url: AnyHttpUrl = Field(..., alias="QDRANT_URL")
+    qdrant_url: AnyHttpUrl = Field(
+        "http://127.0.0.1:6333", alias="QDRANT_URL"
+    )
+    qdrant_collection: str = Field("u4s_kb", alias="QDRANT_COLLECTION")
+    embed_url: AnyHttpUrl = Field(
+        "http://127.0.0.1:8011/embed", alias="EMBED_URL"
+    )
+    rag_facts_limit: int = Field(6, alias="RAG_FACTS_LIMIT")
+    rag_files_limit: int = Field(4, alias="RAG_FILES_LIMIT")
+    rag_max_context_chars: int = Field(6000, alias="RAG_MAX_CONTEXT_CHARS")
+    rag_min_facts: int = Field(4, alias="RAG_MIN_FACTS")
     deepseek_api_key: str = Field(..., alias="DEEPSEEK_API_KEY")
     shelter_cloud_token: str = Field(..., alias="SHELTER_CLOUD_TOKEN")
 
