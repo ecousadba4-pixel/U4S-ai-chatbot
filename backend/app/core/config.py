@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     app_env: Literal["dev", "prod", "test"] = Field("dev", alias="APP_ENV")
     api_prefix: str = "/v1"
 
+    include_debug: bool = Field(
+        False,
+        alias="INCLUDE_DEBUG",
+        description="Управляет добавлением отладочной информации в ответы API",
+    )
+
     request_timeout: float = 30.0
     completion_timeout: float = Field(60.0, alias="COMPLETION_TIMEOUT")
     embed_timeout: float = Field(5.0, alias="EMBED_TIMEOUT")
