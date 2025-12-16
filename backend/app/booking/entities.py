@@ -55,7 +55,7 @@ class BookingEntities:
     checkin: str | None
     checkout: str | None
     adults: int | None
-    children: int
+    children: int | None
     nights: int | None
     missing_fields: list[str]
 
@@ -182,7 +182,7 @@ def _extract_dates(text: str, *, current: date) -> list[date]:
 
 def _extract_guests(text: str) -> tuple[int | None, int]:
     adults: int | None = None
-    children = 0
+    children: int | None = None
 
     plus_match = ADULTS_ONLY_RE.search(text)
     if plus_match:
@@ -207,7 +207,7 @@ def _extract_guests(text: str) -> tuple[int | None, int]:
         except ValueError:
             children = 0
 
-    return adults, max(0, children)
+    return adults, children if children is None else max(0, children)
 
 
 def extract_booking_entities_ru(
@@ -244,6 +244,8 @@ def extract_booking_entities_ru(
         missing_fields.append("checkout")
     if adults is None:
         missing_fields.append("adults")
+    if children is None:
+        missing_fields.append("children")
 
     return BookingEntities(
         checkin=checkin,

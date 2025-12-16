@@ -80,7 +80,7 @@ class SlotState:
 
 
 class SlotFiller:
-    REQUIRED = ("check_in", "check_out", "adults")
+    REQUIRED = ("check_in", "check_out", "adults", "children")
     OPTIONAL = ("children", "children_ages")
 
     def extract(self, text: str, state: SlotState | None = None) -> SlotState:

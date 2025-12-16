@@ -44,7 +44,9 @@ async def chat_endpoint(
     if intent == "booking_quote":
         result = await composer.handle_booking(session_id, payload.message)
     elif intent == "booking_calculation":
-        result = await composer.handle_booking_calculation(entities)
+        result = await composer.handle_booking_calculation(
+            session_id, payload.message, entities
+        )
     elif intent == "knowledge_lookup":
         result = await composer.handle_knowledge(payload.message)
     else:
