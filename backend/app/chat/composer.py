@@ -8,7 +8,11 @@ from app.core.config import Settings, get_settings
 from app.booking.entities import BookingEntities
 from app.booking.models import Guests
 from app.booking.service import BookingQuoteService
-from app.chat.formatting import format_shelter_quote
+from app.chat.formatting import (
+    detect_detail_mode,
+    format_shelter_quote,
+    postprocess_answer,
+)
 from app.booking.slot_filling import SlotFiller, SlotState
 from app.llm.amvera_client import AmveraLLMClient
 from app.llm.prompts import FACTS_PROMPT
@@ -193,6 +197,8 @@ class ChatComposer:
         }
 
     async def handle_general(self, text: str, *, intent: str = "general") -> dict[str, Any]:
+        detail_mode = detect_detail_mode(text)
+
         rag_hits = await gather_rag_data(
             query=text,
             client=self._qdrant,
@@ -253,22 +259,22 @@ class ChatComposer:
         if hits_total < self._settings.rag_min_facts:
             debug["guard_triggered"] = True
             if intent == "lodging":
-                return {
-                    "answer": (
-                        "Я не нашёл подтверждённой информации о домиках или номерах в базе знаний. "
-                        "Если загрузите файл или страницу с типами размещения, ценами и вместимостью, я смогу отвечать точнее."
-                    ),
-                    "debug": debug,
-                }
-            return {
-                "answer": (
+                answer = (
+                    "Я не нашёл подтверждённой информации о домиках или номерах в базе знаний. "
+                    "Если загрузите файл или страницу с типами размещения, ценами и вместимостью, я смогу отвечать точнее."
+                )
+            else:
+                answer = (
                     "Я не нашёл подтверждённой информации в базе знаний, поэтому не буду выдумывать. "
                     "Уточните, пожалуйста: даты заезда и выезда, количество гостей, тип размещения или бюджет? "
                     "Если вам нужна баня/сауна или дополнительные услуги — тоже сообщите. "
                     "Если вы загрузили описание номеров/домиков в базу — скажите ‘покажи варианты из базы’."
-                ),
-                "debug": debug,
-            }
+                )
+
+            final_answer = postprocess_answer(
+                answer, mode="detail" if detail_mode else "brief"
+            )
+            return {"answer": final_answer, "debug": debug}
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -290,16 +296,21 @@ class ChatComposer:
                 rag_hits=rag_hits,
             )
             if rag_answer:
-                return {"answer": rag_answer, "debug": debug}
+                answer = postprocess_answer(
+                    rag_answer, mode="detail" if detail_mode else "brief"
+                )
+                return {"answer": answer, "debug": debug}
             return {
                 "answer": "Сейчас не удалось получить ответ из LLM. Попробуйте уточнить запрос чуть позже.",
                 "debug": debug,
             }
 
-        return {
-            "answer": answer or "Нет данных в базе знаний.",
-            "debug": debug,
-        }
+        final_answer = postprocess_answer(
+            answer or "Нет данных в базе знаний.",
+            mode="detail" if detail_mode else "brief",
+        )
+
+        return {"answer": final_answer, "debug": debug}
 
     def _build_rag_only_answer(
         self,

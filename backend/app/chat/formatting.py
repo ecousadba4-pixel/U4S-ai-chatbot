@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+import re
 from typing import Iterable
 
 from app.booking.entities import BookingEntities
@@ -93,4 +94,127 @@ __all__ = [
     "format_shelter_quote",
     "format_money_rub",
     "format_date_ddmm",
+    "detect_detail_mode",
+    "postprocess_answer",
 ]
+
+
+DETAIL_TRIGGERS = {
+    "подробнее",
+    "детали",
+    "расскажи",
+    "перечисли",
+    "условия",
+    "стоимость",
+    "цены",
+    "сколько",
+    "что входит",
+    "включено",
+    "как добраться",
+    "расписание",
+    "время",
+    "телефон",
+    "адрес",
+}
+
+
+def detect_detail_mode(user_text: str) -> bool:
+    """Определяет, нужен ли подробный ответ."""
+
+    lowered = (user_text or "").lower()
+    if any(trigger in lowered for trigger in DETAIL_TRIGGERS):
+        return True
+
+    if lowered.count("?") >= 2:
+        return True
+
+    connectors = re.findall(r"\b(?:и|а ещё|а еще)\b", lowered)
+    if len(connectors) >= 2:
+        return True
+
+    comma_count = lowered.count(",")
+    if comma_count >= 2 and "?" in lowered:
+        return True
+
+    return False
+
+
+def _collapse_blank_lines(text: str) -> str:
+    cleaned_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.rstrip()
+        if stripped == "" and cleaned_lines and cleaned_lines[-1] == "":
+            continue
+        cleaned_lines.append(stripped)
+    return "\n".join(cleaned_lines).strip()
+
+
+def _remove_booking_cta(text: str) -> str:
+    lines: list[str] = []
+    for line in text.splitlines():
+        lowered = line.lower()
+        if "забронировать" in lowered and "?" in lowered:
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _extract_sentences(text: str) -> list[str]:
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    return [sentence.strip() for sentence in sentences if sentence.strip()]
+
+
+def _collect_bullets(text: str, max_bullets: int = 3) -> list[str]:
+    bullet_prefixes = ("-", "•", "*", "—", "–")
+    bullets: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(bullet_prefixes):
+            continue
+        bullet_text = stripped.lstrip("-•*—– ")
+
+        if len(re.findall(r"\d+\s*[₽р]", bullet_text)) > 2:
+            continue
+        if len(re.findall(r"\d", bullet_text)) >= 6 and "," in bullet_text:
+            continue
+
+        bullets.append(f"• {bullet_text.strip()}")
+        if len(bullets) >= max_bullets:
+            break
+    return bullets
+
+
+def _build_brief_answer(text: str) -> str:
+    sentences = _extract_sentences(text)
+    summary_sentences = sentences[:2]
+
+    bullets = _collect_bullets(text)
+
+    parts: list[str] = []
+    if summary_sentences:
+        parts.append(" ".join(summary_sentences[:2]))
+    if bullets:
+        parts.append("\n".join(bullets))
+
+    if not parts:
+        return text
+
+    brief_answer = "\n".join(parts)
+    hint = "Если нужны детали — напишите «подробнее»."
+    return f"{brief_answer}\n{hint}".strip()
+
+
+def postprocess_answer(answer: str, mode: str = "brief") -> str:
+    """Нормализует ответ перед отдачей пользователю."""
+
+    cleaned = _collapse_blank_lines(answer)
+    cleaned = _remove_booking_cta(cleaned)
+
+    if mode == "detail":
+        return cleaned
+
+    long_answer = len(cleaned) > 700 or len(cleaned.splitlines()) > 5
+    if not long_answer:
+        return cleaned
+
+    return _build_brief_answer(cleaned)
