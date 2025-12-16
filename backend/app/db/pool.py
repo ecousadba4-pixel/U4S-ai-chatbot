@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 import asyncpg
@@ -18,6 +19,7 @@ async def get_pool() -> asyncpg.Pool:
     return _pool
 
 
+@asynccontextmanager
 async def lifespan_pool() -> AsyncIterator[asyncpg.Pool]:
     pool = await get_pool()
     try:
