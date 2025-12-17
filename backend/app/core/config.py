@@ -18,12 +18,12 @@ class Settings(BaseSettings):
     embed_url: AnyHttpUrl = Field(
         "http://127.0.0.1:8011/embed", alias="EMBED_URL"
     )
-    rag_facts_limit: int = Field(6, alias="RAG_FACTS_LIMIT")
-    rag_files_limit: int = Field(4, alias="RAG_FILES_LIMIT")
-    rag_max_context_chars: int = Field(4000, alias="RAG_MAX_CONTEXT_CHARS")
-    rag_context_chars: int = Field(4000, alias="RAG_CONTEXT_CHARS")
-    rag_max_snippets: int = Field(8, alias="RAG_MAX_SNIPPETS")
-    rag_min_facts: int = Field(4, alias="RAG_MIN_FACTS")
+    rag_facts_limit: int = Field(5, alias="RAG_FACTS_LIMIT")
+    rag_files_limit: int = Field(3, alias="RAG_FILES_LIMIT")
+    rag_max_context_chars: int = Field(2500, alias="RAG_MAX_CONTEXT_CHARS")
+    rag_context_chars: int = Field(2500, alias="RAG_CONTEXT_CHARS")
+    rag_max_snippets: int = Field(5, alias="RAG_MAX_SNIPPETS")
+    rag_min_facts: int = Field(3, alias="RAG_MIN_FACTS")
     rag_score_threshold: float = Field(0.2, alias="RAG_SCORE_THRESHOLD")
     redis_url: str = Field("redis://127.0.0.1:6379/0", alias="REDIS_URL")
     session_ttl_seconds: int = Field(259_200, alias="SESSION_TTL_SECONDS")

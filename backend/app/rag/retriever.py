@@ -1,144 +1,68 @@
 from __future__ import annotations
 
-from typing import Any, Iterable
-
+import asyncio
+import hashlib
 import logging
 import time
+from collections import OrderedDict
+from typing import Any, Iterable
 
 import asyncpg
-import httpx
 
 from app.core.config import get_settings
 from app.db.queries.faq import search_faq
+from app.rag.embed_client import get_embed_client
 from app.rag.qdrant_client import QdrantClient
 
 
 logger = logging.getLogger(__name__)
 
 
-def _normalize_vector(vector: Any) -> list[float]:
-    if isinstance(vector, list):
-        floats = [float(x) for x in vector if isinstance(x, (int, float))]
-        if floats:
-            return floats
-    return []
+class RAGCache:
+    """Простой TTL-кэш для результатов RAG-поиска."""
+
+    def __init__(self, max_size: int = 128, ttl_seconds: float = 120.0) -> None:
+        self._cache: OrderedDict[str, tuple[dict[str, Any], float]] = OrderedDict()
+        self._max_size = max_size
+        self._ttl = ttl_seconds
+        self._lock = asyncio.Lock()
+
+    def _make_key(self, query: str, intent: str | None) -> str:
+        normalized = f"{query.strip().lower()}|{intent or ''}"
+        return hashlib.md5(normalized.encode(), usedforsecurity=False).hexdigest()
+
+    async def get(self, query: str, intent: str | None) -> dict[str, Any] | None:
+        key = self._make_key(query, intent)
+        async with self._lock:
+            if key not in self._cache:
+                return None
+            result, ts = self._cache[key]
+            if time.time() - ts > self._ttl:
+                del self._cache[key]
+                return None
+            self._cache.move_to_end(key)
+            return result
+
+    async def set(self, query: str, intent: str | None, result: dict[str, Any]) -> None:
+        key = self._make_key(query, intent)
+        async with self._lock:
+            self._cache[key] = (result, time.time())
+            self._cache.move_to_end(key)
+            while len(self._cache) > self._max_size:
+                self._cache.popitem(last=False)
 
 
-def _extract_embeddings(data: Any) -> list[list[float]]:
-    embeddings: list[list[float]] = []
-
-    if isinstance(data, dict):
-        for key in ("embeddings", "vectors", "data", "result"):
-            value = data.get(key)
-            if isinstance(value, list):
-                embeddings.extend(_extract_embeddings(value))
-        for key in ("embedding", "vector"):
-            vector = _normalize_vector(data.get(key))
-            if vector:
-                embeddings.append(vector)
-        return embeddings
-
-    if isinstance(data, list):
-        if data and all(isinstance(x, (int, float)) for x in data):
-            vector = _normalize_vector(data)
-            if vector:
-                embeddings.append(vector)
-            return embeddings
-
-        for item in data:
-            if isinstance(item, dict):
-                for key in ("embedding", "vector"):
-                    vector = _normalize_vector(item.get(key))
-                    if vector:
-                        embeddings.append(vector)
-                continue
-            vector = _normalize_vector(item)
-            if vector:
-                embeddings.append(vector)
-
-    return embeddings
+_RAG_CACHE = RAGCache()
 
 
 async def embed_texts(texts: list[str]) -> tuple[list[list[float]], str | None, int]:
-    settings = get_settings()
-
-    if not texts:
-        return [], None, 0
-
-    started = time.perf_counter()
-    timeout = httpx.Timeout(
-        connect=2.0,
-        read=settings.embed_timeout,
-        write=settings.embed_timeout,
-        pool=settings.embed_timeout,
-    )
-
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(str(settings.embed_url), json={"texts": list(texts)})
-            response.raise_for_status()
-            data = response.json()
-    except httpx.HTTPError as exc:  # pragma: no cover - сетевые ошибки
-        latency_ms = int((time.perf_counter() - started) * 1000)
-        logger.error("Embedding request failed: %s", exc, extra={"embed_error": str(exc)})
-        return [], str(exc), latency_ms
-    except ValueError as exc:  # pragma: no cover - невалидный JSON
-        latency_ms = int((time.perf_counter() - started) * 1000)
-        logger.error("Failed to parse embedding response: %s", exc, extra={"embed_error": str(exc)})
-        return [], str(exc), latency_ms
-
-    latency_ms = int((time.perf_counter() - started) * 1000)
-
-    embeddings: list[list[float]] = []
-    expected_dim: int | None = None
-    if isinstance(data, dict):
-        dim = data.get("dim")
-        if isinstance(dim, int) and dim > 0:
-            expected_dim = dim
-
-        vectors = data.get("vectors")
-        if isinstance(vectors, list):
-            for item in vectors:
-                vector = _normalize_vector(item)
-                if vector:
-                    embeddings.append(vector)
-
-            if expected_dim:
-                if any(len(vec) != expected_dim for vec in embeddings):
-                    logger.warning(
-                        "Embedding dimension mismatch", extra={"embed_error": "dim_mismatch"}
-                    )
-                    return [], "dim_mismatch", latency_ms
-                if expected_dim != 768:
-                    logger.warning(
-                        "Unexpected embedding dimension", extra={"embed_error": "unexpected_dim"}
-                    )
-                    return [], "unexpected_dim", latency_ms
-
-    if not embeddings:
-        embeddings = _extract_embeddings(data)
-
-    if expected_dim and embeddings:
-        if any(len(vec) != expected_dim for vec in embeddings):
-            logger.warning(
-                "Embedding dimension mismatch", extra={"embed_error": "dim_mismatch"}
-            )
-            return [], "dim_mismatch", latency_ms
-        if expected_dim != 768:
-            logger.warning(
-                "Unexpected embedding dimension", extra={"embed_error": "unexpected_dim"}
-            )
-            return [], "unexpected_dim", latency_ms
-
-    if not embeddings:
-        logger.warning("Embedding service returned empty embeddings", extra={"embed_error": "empty_embeddings"})
-        return [], "empty_embeddings", latency_ms
-    return embeddings, None, latency_ms
+    """Запрашивает embeddings через singleton клиент с кэшированием."""
+    client = get_embed_client()
+    return await client.embed(texts)
 
 
 async def embed_query(text: str) -> list[float]:
     """Запрашивает embedding у внешнего сервиса."""
-
     embeddings, _, _ = await embed_texts([text])
     return embeddings[0] if embeddings else []
 
@@ -266,6 +190,36 @@ async def retrieve_context(query: str, *, client: QdrantClient) -> dict[str, lis
     return {"facts_hits": facts_hits, "files_hits": files_hits}
 
 
+async def _safe_qdrant_search(
+    vector: list[float],
+    *,
+    client: QdrantClient,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Обёртка для безопасного поиска в Qdrant."""
+    if not vector:
+        return []
+    try:
+        return await qdrant_search(vector, client=client, limit=limit)
+    except Exception as exc:  # pragma: no cover
+        logger.error("Qdrant search failed: %s", exc)
+        return []
+
+
+async def _safe_faq_search(
+    pool: asyncpg.Pool,
+    query: str,
+    limit: int,
+    min_similarity: float,
+) -> list[dict]:
+    """Обёртка для безопасного поиска в FAQ."""
+    try:
+        return await search_faq(pool, query=query, limit=limit, min_similarity=min_similarity)
+    except Exception as exc:  # pragma: no cover
+        logger.error("FAQ search failed: %s", exc)
+        return []
+
+
 async def gather_rag_data(
     query: str,
     *,
@@ -276,9 +230,22 @@ async def gather_rag_data(
     faq_limit: int = 3,
     faq_min_similarity: float = 0.35,
     intent: str | None = None,
+    use_cache: bool = True,
 ) -> dict[str, Any]:
     settings = get_settings()
     rag_started = time.perf_counter()
+
+    # Проверка кэша
+    if use_cache:
+        cached = await _RAG_CACHE.get(query, intent)
+        if cached is not None:
+            logger.debug("RAG cache hit for query: %s", query[:50])
+            # Обновляем latency для кэшированного результата
+            cached_result = {**cached}
+            cached_result["rag_latency_ms"] = 0
+            cached_result["embed_latency_ms"] = 0
+            cached_result["cache_hit"] = True
+            return cached_result
 
     expanded_queries: list[str] = []
     if intent == "lodging":
@@ -316,20 +283,25 @@ async def gather_rag_data(
         files_limit or settings.rag_files_limit,
     )
 
+    # Параллельный поиск: все Qdrant-запросы + FAQ одновременно
+    qdrant_tasks = [
+        _safe_qdrant_search(vector, client=client, limit=search_limit)
+        for vector in embeddings
+        if vector
+    ]
+    faq_task = _safe_faq_search(pool, query, faq_limit, faq_min_similarity)
+
+    # Запускаем всё параллельно
+    all_results = await asyncio.gather(*qdrant_tasks, faq_task)
+
+    # Разбираем результаты: все кроме последнего — Qdrant, последний — FAQ
+    qdrant_results = all_results[:-1]
+    faq_hits = all_results[-1]
+
     qdrant_raw: list[dict[str, Any]] = []
-    for vector in embeddings:
-        if not vector:
-            continue
-        try:
-            qdrant_raw.extend(
-                await qdrant_search(
-                    vector,
-                    client=client,
-                    limit=search_limit,
-                )
-            )
-        except Exception as exc:  # pragma: no cover - сеть/хранилище
-            logger.error("Qdrant search failed: %s", exc)
+    for result in qdrant_results:
+        if result:
+            qdrant_raw.extend(result)
 
     raw_scores = [
         float(item.get("score", 0.0) or 0.0)
@@ -370,18 +342,10 @@ async def gather_rag_data(
     filtered_hits.sort(key=lambda item: item.get("score", 0.0), reverse=True)
     filtered_out_count = len(normalized_hits) - len(filtered_hits)
 
-    try:
-        faq_hits = await search_faq(
-            pool, query=query, limit=faq_limit, min_similarity=faq_min_similarity
-        )
-    except Exception as exc:  # pragma: no cover - БД
-        logger.error("FAQ search failed: %s", exc)
-        faq_hits = []
-
     hits_total = len(filtered_hits) + len(faq_hits)
     rag_latency_ms = int((time.perf_counter() - rag_started) * 1000)
 
-    return {
+    result = {
         "facts_hits": filtered_hits,
         "files_hits": [],
         "qdrant_hits": filtered_hits,
@@ -399,7 +363,16 @@ async def gather_rag_data(
         "boosting_applied": boosting_applied,
         "intent_detected": intent,
         "merged_hits_count": merged_hits_count,
+        "cache_hit": False,
     }
+
+    # Сохраняем в кэш (без raw_qdrant_hits для экономии памяти)
+    if use_cache and hits_total > 0:
+        cache_result = {k: v for k, v in result.items() if k != "raw_qdrant_hits"}
+        cache_result["raw_qdrant_hits"] = []
+        await _RAG_CACHE.set(query, intent, cache_result)
+
+    return result
 
 
 async def search_hits_with_payload(

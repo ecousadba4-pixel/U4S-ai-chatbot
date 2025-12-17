@@ -39,8 +39,8 @@ class QdrantClient:
 
         async for attempt in AsyncRetrying(
             reraise=True,
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+            stop=stop_after_attempt(2),
+            wait=wait_exponential(multiplier=0.3, min=0.3, max=1.5),
             retry=retry_if_exception_type(httpx.HTTPError),
         ):
             with attempt:
@@ -66,8 +66,8 @@ class QdrantClient:
 
         async for attempt in AsyncRetrying(
             reraise=True,
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+            stop=stop_after_attempt(2),
+            wait=wait_exponential(multiplier=0.3, min=0.3, max=1.5),
             retry=retry_if_exception_type(httpx.HTTPError),
         ):
             with attempt:

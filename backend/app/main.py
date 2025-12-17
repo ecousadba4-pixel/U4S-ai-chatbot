@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import Depends, FastAPI
 
 from app.api.v1 import admin, chat, diag, facts, knowledge, rag_search
@@ -11,7 +13,10 @@ from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.db.pool import get_pool
 from app.llm.amvera_client import AmveraLLMClient
+from app.rag.embed_client import close_embed_client, get_embed_client
 from app.rag.qdrant_client import QdrantClient, get_qdrant_client
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 setup_logging()
@@ -25,8 +30,34 @@ shelter_service = ShelterCloudService()
 booking_service = BookingQuoteService(shelter_service)
 
 
+async def _warmup_connections() -> None:
+    """Прогрев соединений при старте для устранения холодного старта."""
+    logger.info("Warming up connections...")
+
+    # Прогрев embed клиента
+    embed_client = get_embed_client()
+    try:
+        await embed_client.embed(["warmup"])
+        logger.info("Embed client warmed up")
+    except Exception as exc:
+        logger.warning("Embed warmup failed: %s", exc)
+
+    # Прогрев Qdrant клиента
+    try:
+        await qdrant_client.scroll(collection=settings.qdrant_collection, limit=1)
+        logger.info("Qdrant client warmed up")
+    except Exception as exc:
+        logger.warning("Qdrant warmup failed: %s", exc)
+
+    logger.info("Warmup complete")
+
+
 async def lifespan(app: FastAPI):
     pool = await get_pool()
+
+    # Прогрев соединений
+    await _warmup_connections()
+
     try:
         yield
     finally:
@@ -34,6 +65,7 @@ async def lifespan(app: FastAPI):
         await qdrant_client.close()
         await llm_client.close()
         await shelter_service.close()
+        await close_embed_client()
 
 
 def composer_dependency(pool=Depends(get_pool)) -> ChatComposer:
