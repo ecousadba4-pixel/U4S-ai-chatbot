@@ -95,8 +95,9 @@ def test_booking_calculation_fsm_linear_flow(booking_fsm_env):
     assert "сколько детей" in response["answer"].lower()
 
     response = send("нет")
-    assert "оформляем бронирование" in response["answer"].lower()
+    assert "оформляем" not in response["answer"].lower()
     assert "студия" in response["answer"].lower()
+    assert "тип размещения" not in response["answer"].lower()
 
     assert booking_service.calls
     last_call = booking_service.calls[-1]
@@ -105,6 +106,10 @@ def test_booking_calculation_fsm_linear_flow(booking_fsm_env):
     guests: Guests = last_call["guests"]  # type: ignore[assignment]
     assert guests.adults == 2
     assert guests.children == 0
+
+    context = BookingContext.from_dict(_fsm_store.get("fsm"))
+    assert context
+    assert context.state == BookingState.AWAITING_USER_DECISION
 
 
 def test_children_step_accepts_number_and_moves_forward(booking_fsm_env):
@@ -141,10 +146,11 @@ def test_children_step_handles_zero_and_yes(booking_fsm_env):
     send(session_zero, "2")
 
     response_zero = send(session_zero, "нет")
-    assert "оформляем" in response_zero["answer"].lower()
+    assert "оформляем" not in response_zero["answer"].lower()
     context_zero = BookingContext.from_dict(fsm_store.get(session_zero))
     assert context_zero
     assert context_zero.children == 0
+    assert context_zero.state == BookingState.AWAITING_USER_DECISION
 
     session_yes = "fsm-yes"
     send(session_yes, "хочу рассчитать")
@@ -156,6 +162,27 @@ def test_children_step_handles_zero_and_yes(booking_fsm_env):
     context_yes = BookingContext.from_dict(fsm_store.get(session_yes))
     assert context_yes
     assert context_yes.state == BookingState.ASK_CHILDREN_COUNT
+
+
+def test_booking_request_gives_link(booking_fsm_env):
+    composer, _booking_service, make_entities, fsm_store = booking_fsm_env
+
+    def send(message: str):
+        entities = make_entities(message)
+        return asyncio.run(composer.handle_booking_calculation("fsm-link", message, entities))
+
+    send("хочу рассчитать")
+    send("19 декабря")
+    send("2")
+    send("2")
+    send("нет")
+
+    response = send("забронировать")
+
+    assert "usadba4.ru/bronirovanie" in response["answer"].lower()
+    context = BookingContext.from_dict(fsm_store.get("fsm-link"))
+    assert context
+    assert context.state == BookingState.DONE
 
 
 def test_combined_guests_parsing_skips_children_question(booking_fsm_env):

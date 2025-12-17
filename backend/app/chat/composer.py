@@ -128,8 +128,6 @@ class ChatComposer:
             missing.append("children")
         if (state.children or 0) > 0 and not state.children_ages:
             missing.append("children_ages")
-        if state.room_type is None:
-            missing.append("room_type")
         return missing
 
     def _has_booking_context(self, state: SlotState) -> bool:
@@ -196,8 +194,6 @@ class ChatComposer:
             missing.append("children")
         if (context.children or 0) > 0 and not context.children_ages:
             missing.append("children_ages")
-        if context.room_type is None:
-            missing.append("room_type")
         return missing
 
     async def _handle_booking_message(
@@ -275,8 +271,8 @@ class ChatComposer:
                 BookingState.ASK_ADULTS,
                 BookingState.ASK_CHILDREN_COUNT,
                 BookingState.ASK_CHILDREN_AGES,
-                BookingState.ASK_ROOM_TYPE,
                 BookingState.CALCULATE,
+                BookingState.AWAITING_USER_DECISION,
                 BookingState.CONFIRM_BOOKING,
             }
             adults = parse_adults(text, allow_general_numbers=allow_general_adults)
@@ -327,8 +323,8 @@ class ChatComposer:
             BookingState.ASK_ADULTS,
             BookingState.ASK_CHILDREN_COUNT,
             BookingState.ASK_CHILDREN_AGES,
-            BookingState.ASK_ROOM_TYPE,
             BookingState.CALCULATE,
+            BookingState.AWAITING_USER_DECISION,
             BookingState.CONFIRM_BOOKING,
         ]
         if state in order:
@@ -454,14 +450,14 @@ class ChatComposer:
                 if context.children is not None:
                     if (context.children or 0) > 0:
                         if context.children_ages and len(context.children_ages) == context.children:
-                            state = BookingState.ASK_ROOM_TYPE
+                            state = BookingState.CALCULATE
                             continue
                         if "взросл" not in lowered_input:
                             ages = parse_children_ages(text, expected=context.children)
                             if ages:
                                 context.children_ages = ages
-                                state = BookingState.ASK_ROOM_TYPE
-                                context.state = BookingState.ASK_ROOM_TYPE
+                                state = BookingState.CALCULATE
+                                context.state = BookingState.CALCULATE
                                 continue
                         context.state = BookingState.ASK_CHILDREN_AGES
                         return self._ask_with_retry(
@@ -470,8 +466,6 @@ class ChatComposer:
                             "Уточните возраст детей (через запятую).",
                         )
                     else:
-                        if context.room_type is None:
-                            context.room_type = "Студия"
                         state = BookingState.CALCULATE
                     continue
                 children = parse_children_count(text)
@@ -484,8 +478,6 @@ class ChatComposer:
                             BookingState.ASK_CHILDREN_AGES,
                             "Уточните возраст детей (через запятую).",
                         )
-                    if context.room_type is None:
-                        context.room_type = "Студия"
                     state = BookingState.CALCULATE
                     context.state = BookingState.CALCULATE
                     continue
@@ -498,16 +490,16 @@ class ChatComposer:
             if state == BookingState.ASK_CHILDREN_AGES:
                 context.state = BookingState.ASK_CHILDREN_AGES
                 if (context.children or 0) == 0:
-                    state = BookingState.ASK_ROOM_TYPE
+                    state = BookingState.CALCULATE
                     continue
                 if context.children_ages and len(context.children_ages) == context.children:
-                    state = BookingState.ASK_ROOM_TYPE
+                    state = BookingState.CALCULATE
                     continue
                 ages = parse_children_ages(text, expected=context.children)
                 if ages:
                     context.children_ages = ages
-                    state = BookingState.ASK_ROOM_TYPE
-                    context.state = BookingState.ASK_ROOM_TYPE
+                    state = BookingState.CALCULATE
+                    context.state = BookingState.CALCULATE
                     continue
                 return self._ask_with_retry(
                     context,
@@ -515,26 +507,14 @@ class ChatComposer:
                     "Не услышал возраст детей, укажите числа через запятую.",
                 )
 
-            if state == BookingState.ASK_ROOM_TYPE:
-                context.state = BookingState.ASK_ROOM_TYPE
-                if context.room_type:
-                    state = BookingState.CALCULATE
-                    continue
-                room_type = parse_room_type(text)
-                if room_type:
-                    context.room_type = room_type
-                    state = BookingState.CALCULATE
-                    continue
-                return self._ask_with_retry(
-                    context,
-                    BookingState.ASK_ROOM_TYPE,
-                    "Какой тип размещения предпочитаете: Студия, Шале, Шале Комфорт или Семейный номер?",
-                )
-
             if state == BookingState.CALCULATE:
                 context.state = BookingState.CALCULATE
                 answer = await self._calculate_booking(context, debug)
                 return answer
+
+            if state == BookingState.AWAITING_USER_DECISION:
+                context.state = BookingState.AWAITING_USER_DECISION
+                return self._handle_post_quote_decision(text, context)
 
             if state == BookingState.CONFIRM_BOOKING:
                 context.state = BookingState.CONFIRM_BOOKING
@@ -616,9 +596,6 @@ class ChatComposer:
                 context, BookingState.ASK_CHILDREN_AGES, "Не услышал возраст детей, укажите числа через запятую."
             )
 
-        if context.room_type is None:
-            context.room_type = "Студия"
-
         guests = Guests(
             adults=context.adults,
             children=context.children or 0,
@@ -654,17 +631,42 @@ class ChatComposer:
             missing_fields=[],
         )
         price_block = format_shelter_quote(booking_entities, offers)
-        context.state = BookingState.CONFIRM_BOOKING
-        return f"{price_block}\n\nОформляем бронирование?"
+        context.state = BookingState.AWAITING_USER_DECISION
+        return price_block
 
     def _handle_confirmation(self, text: str, context: BookingContext) -> str:
         normalized = text.strip().lower()
-        if any(token in normalized for token in {"да", "оформляй", "подтверждаю", "ок"}):
+        return self._handle_post_quote_decision(text, context)
+
+    def _handle_post_quote_decision(self, text: str, context: BookingContext) -> str:
+        normalized = text.strip().lower()
+        room_type = parse_room_type(text)
+        booking_intent = any(
+            token in normalized
+            for token in {
+                "забронировать",
+                "бронировать",
+                "оформляй",
+                "оформляем",
+                "оформляю",
+                "берем",
+                "берём",
+                "возьми",
+            }
+        )
+
+        if room_type:
+            context.room_type = room_type
+
+        if booking_intent or room_type:
             context.state = BookingState.DONE
-            return "Отлично, фиксирую бронирование. Если захотите изменить детали, скажите \"начнём заново\"."
-        if any(token in normalized for token in {"нет", "отмена", "стоп", "не"}):
-            context.state = BookingState.DONE
-            return "Ок, если захотите изменить детали, скажите \"начнём заново\"."
+            selection = f"Вы выбрали тип: {context.room_type}." if context.room_type else ""
+            note = (
+                "Я показываю цены и варианты. Оформить бронь можно по ссылке "
+                "https://usadba4.ru/bronirovanie/."
+            )
+            return " ".join(filter(None, [selection, note, "Если нужно изменить даты, скажите 'начнём заново'."]))
+
         if "дат" in normalized:
             context.state = BookingState.ASK_CHECKIN
             context.checkin = None
@@ -677,8 +679,11 @@ class ChatComposer:
             context.children = None
             context.children_ages = []
             return self._booking_prompt("Сколько взрослых едет?", context)
-        return self._ask_with_retry(
-            context, BookingState.CONFIRM_BOOKING, "Оформляем бронирование?"
+
+        context.state = BookingState.AWAITING_USER_DECISION
+        return (
+            "Если хотите изменить параметры, напишите новые даты или количество гостей. "
+            "Чтобы забронировать, воспользуйтесь ссылкой https://usadba4.ru/bronirovanie/."
         )
 
     def _is_cancel_command(self, normalized: str) -> bool:
@@ -709,8 +714,6 @@ class ChatComposer:
             return "children"
         if state.children > 0 and not state.children_ages:
             return "children_ages"
-        if state.room_type is None:
-            return "room_type"
         return None
 
     def _build_booking_prompt(
@@ -723,7 +726,6 @@ class ChatComposer:
             "adults": "Сколько взрослых едет?",
             "children": "Сколько детей? Если детей нет — напишите 0.",
             "children_ages": "Уточните возраст детей (через запятую).",
-            "room_type": "Какой тип размещения выбрать: Студия, Шале, Шале Комфорт или Семейный номер?",
         }
 
         prompt = question_map.get(slot, "Подскажите детали бронирования, пожалуйста.")

@@ -73,7 +73,7 @@ def test_format_shelter_quote_renders_readable_blocks(monkeypatch):
         "🏠 Стандарт\n"
         "— 25 000 ₽\n"
         "— 30 м²\n\n"
-        "Нужно оформить бронирование?"
+        "Показаны минимальные цены по каждому типу номера."
     )
 
     _reset_settings_cache()
@@ -135,8 +135,108 @@ def test_format_shelter_quote_respects_limit_and_currency(monkeypatch):
         "🏠 Люкс\n"
         "— 4 700 ₽\n"
         "— 40 м²\n\n"
-        "…и ещё 1 вариантов. Сказать \"покажи ещё\"?\n\n"
-        "Нужно оформить бронирование?"
+        "Показаны минимальные цены по каждому типу номера.\n\n"
+        "…и ещё 1 вариантов. Сказать \"покажи ещё\"?"
     )
+
+    _reset_settings_cache()
+
+
+def test_format_shelter_quote_deduplicates_room_types(monkeypatch):
+    _prepare_settings_env(monkeypatch, "5")
+
+    entities = BookingEntities(
+        checkin="2024-12-19",
+        checkout="2024-12-21",
+        adults=2,
+        children=2,
+        nights=2,
+        room_type=None,
+        missing_fields=[],
+    )
+    guests = Guests(adults=2, children=2)
+    offers = [
+        BookingQuote(
+            room_name="Студия",
+            total_price=28738,
+            currency="RUB",
+            breakfast_included=True,
+            room_area=24,
+            check_in=entities.checkin or "",
+            check_out=entities.checkout or "",
+            guests=guests,
+        ),
+        BookingQuote(
+            room_name="Студия",
+            total_price=30250,
+            currency="RUB",
+            breakfast_included=True,
+            room_area=24,
+            check_in=entities.checkin or "",
+            check_out=entities.checkout or "",
+            guests=guests,
+        ),
+    ]
+
+    answer = format_shelter_quote(entities, offers)
+
+    assert "28 738 ₽" in answer
+    assert "30 250 ₽" not in answer
+    assert answer.strip().endswith("Показаны минимальные цены по каждому типу номера.")
+
+    _reset_settings_cache()
+
+
+def test_format_shelter_quote_keeps_min_price_per_type(monkeypatch):
+    _prepare_settings_env(monkeypatch, "6")
+
+    entities = BookingEntities(
+        checkin="2024-12-19",
+        checkout="2024-12-21",
+        adults=2,
+        children=0,
+        nights=2,
+        room_type=None,
+        missing_fields=[],
+    )
+    guests = Guests(adults=2, children=0)
+    offers = [
+        BookingQuote(
+            room_name="Шале",
+            total_price=26160,
+            currency="RUB",
+            breakfast_included=True,
+            room_area=34,
+            check_in=entities.checkin or "",
+            check_out=entities.checkout or "",
+            guests=guests,
+        ),
+        BookingQuote(
+            room_name="Шале",
+            total_price=28123,
+            currency="RUB",
+            breakfast_included=True,
+            room_area=34,
+            check_in=entities.checkin or "",
+            check_out=entities.checkout or "",
+            guests=guests,
+        ),
+        BookingQuote(
+            room_name="Семейный",
+            total_price=32927,
+            currency="RUB",
+            breakfast_included=True,
+            room_area=48,
+            check_in=entities.checkin or "",
+            check_out=entities.checkout or "",
+            guests=guests,
+        ),
+    ]
+
+    answer = format_shelter_quote(entities, offers)
+
+    assert answer.index("26 160") < answer.index("32 927")
+    assert "28 123" not in answer
+    assert "Шале" in answer and "Семейный" in answer
 
     _reset_settings_cache()
