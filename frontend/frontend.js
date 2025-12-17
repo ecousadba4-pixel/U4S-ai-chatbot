@@ -230,14 +230,24 @@
     // Это нужно для корректного отображения ссылок от LLM
     let normalizedText = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, "$2");
 
-    const urlRegex = /(https?:\/\/[^\s\])<]+)/g;
+    // Ищем URL. Далее мы руками чистим хвостовые знаки пунктуации.
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
     let lastIndex = 0;
     let match;
     let hasBookingLink = false;
 
     while ((match = urlRegex.exec(normalizedText)) !== null) {
-      const url = match[0];
+      const rawUrl = match[0];
       const segment = normalizedText.slice(lastIndex, match.index);
+
+      // Отделяем хвостовую пунктуацию (.,;:!?) чтобы ссылка была кликабельной
+      let url = rawUrl;
+      let trailing = "";
+      const trailingMatch = url.match(/([.,;:!?]+)$/);
+      if (trailingMatch) {
+        trailing = trailingMatch[1];
+        url = url.slice(0, -trailing.length);
+      }
 
       if (url.startsWith("https://usadba4.ru/bronirovanie/")) {
         hasBookingLink = true;
@@ -284,6 +294,10 @@
       anchor.className = "chat-link";
 
       container.appendChild(anchor);
+
+      if (trailing) {
+        container.appendChild(doc.createTextNode(trailing));
+      }
 
       lastIndex = urlRegex.lastIndex;
     }
