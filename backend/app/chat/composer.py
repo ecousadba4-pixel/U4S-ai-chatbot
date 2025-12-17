@@ -1021,19 +1021,15 @@ class ChatComposer:
 
         for faq in faq_hits:
             answer = (faq.get("answer") or "").strip()
-            question = (faq.get("question") or "").strip()
             if not answer:
                 continue
-            text = answer
-            if question:
-                text = f"{question}: {answer}"
-            candidates.append((0, float(faq.get("similarity", 0.0) or 0.0), text, text))
+            # Для FAQ показываем только ответ, без вопроса
+            candidates.append((0, float(faq.get("similarity", 0.0) or 0.0), answer, answer))
 
         for hit in qdrant_hits:
             text = (hit.get("text") or "").strip()
             if not text:
                 continue
-            title = (hit.get("title") or "").strip()
             payload = hit.get("payload") if isinstance(hit.get("payload"), dict) else {}
             type_value = (hit.get("type") or payload.get("type") or "").strip()
             source = (hit.get("source") or payload.get("source") or "").strip()
@@ -1044,8 +1040,9 @@ class ChatComposer:
             elif source.startswith("knowledge") or source.endswith(".md") or ".md" in source:
                 priority = 1
 
-            snippet = f"{title}: {text}" if title else text
-            candidates.append((priority, float(hit.get("score", 0.0) or 0.0), snippet, text))
+            # Извлекаем чистый текст без технических метаданных
+            clean_text = self._extract_clean_text(text)
+            candidates.append((priority, float(hit.get("score", 0.0) or 0.0), clean_text, clean_text))
 
         if not candidates:
             return ""
@@ -1078,6 +1075,16 @@ class ChatComposer:
                 answer_lines.append(f"• {note}")
 
         return "\n".join(answer_lines)
+
+    def _extract_clean_text(self, text: str) -> str:
+        """Извлекает чистый текст без технических метаданных."""
+        # Если текст содержит Q: и A:, извлекаем только ответ
+        if "Q:" in text and "A:" in text:
+            # Формат: "Q: вопрос? A: ответ"
+            parts = text.split("A:", 1)
+            if len(parts) > 1:
+                return parts[1].strip()
+        return text
 
     async def handle_knowledge(self, text: str) -> dict[str, Any]:
         rag_hits = await gather_rag_data(
