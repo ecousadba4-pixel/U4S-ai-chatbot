@@ -232,11 +232,45 @@
     let hasBookingLink = false;
 
     while ((match = urlRegex.exec(text)) !== null) {
-      if (match.index > lastIndex) {
-        container.appendChild(doc.createTextNode(text.slice(lastIndex, match.index)));
+      const url = match[0];
+      const segment = text.slice(lastIndex, match.index);
+
+      if (url.startsWith("https://usadba4.ru/bronirovanie/")) {
+        hasBookingLink = true;
+
+        let preservedSegment = segment;
+        const separators = ["\n", ".", "!", "?"];
+        let cutPoint = -1;
+
+        separators.forEach((sep) => {
+          const idx = preservedSegment.lastIndexOf(sep);
+          if (idx > cutPoint) {
+            cutPoint = idx;
+          }
+        });
+
+        preservedSegment = cutPoint >= 0 ? preservedSegment.slice(0, cutPoint + 1) : "";
+
+        if (preservedSegment) {
+          container.appendChild(doc.createTextNode(preservedSegment));
+        }
+
+        lastIndex = urlRegex.lastIndex;
+
+        while (lastIndex < text.length && /[\s.,;:!?)\]]/.test(text[lastIndex])) {
+          if (text[lastIndex] === "\n") {
+            break;
+          }
+          lastIndex += 1;
+        }
+
+        urlRegex.lastIndex = lastIndex;
+        continue;
       }
 
-      const url = match[0];
+      if (segment) {
+        container.appendChild(doc.createTextNode(segment));
+      }
 
       const anchor = doc.createElement("a");
       anchor.href = url;
@@ -246,10 +280,6 @@
       anchor.className = "chat-link";
 
       container.appendChild(anchor);
-
-      if (url.startsWith("https://usadba4.ru/bronirovanie/")) {
-        hasBookingLink = true;
-      }
 
       lastIndex = urlRegex.lastIndex;
     }

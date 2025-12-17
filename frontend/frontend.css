@@ -49,5 +49,5 @@
 .chat-message{ white-space:pre-wrap; word-break:break-word }
 .chat-link{ color:#2563eb; text-decoration:underline }
 .booking-btn-wrap{ margin-top:10px }
-.booking-btn{ display:inline-block; padding:10px 16px; background:#16a34a; color:#fff; border-radius:8px; text-decoration:none; font-weight:600 }
-.booking-btn:hover{ background:#15803d }
+.booking-btn{ display:inline-block; padding:12px 20px; background:#8a9d4c; color:#ffffff; border-radius:12px; text-decoration:none; font-weight:600; font-size:15px }
+.booking-btn:hover{ background:#7f9145 }
