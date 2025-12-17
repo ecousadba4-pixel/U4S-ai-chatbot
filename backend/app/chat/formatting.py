@@ -70,16 +70,38 @@ def _format_offer(offer: BookingQuote) -> str:
     return "\n".join(lines)
 
 
+def select_min_offer_per_room_type(
+    offers: Iterable[BookingQuote],
+) -> list[BookingQuote]:
+    """Группирует предложения по типу комнаты и берёт минимальную цену."""
+
+    best_by_room: dict[str, tuple[BookingQuote, tuple[float, int, int]]] = {}
+    for idx, offer in enumerate(offers):
+        room_key = offer.room_name.lower()
+        has_breakfast = 0 if bool(offer.breakfast_included) else 1
+        score = (offer.total_price, has_breakfast, idx)
+        current = best_by_room.get(room_key)
+        if current is None or score < current[1]:
+            best_by_room[room_key] = (offer, score)
+
+    unique_offers = [item[0] for item in best_by_room.values()]
+    return sorted(unique_offers, key=lambda item: item.total_price)
+
+
 def format_shelter_quote(
     entities: BookingEntities, offers: Iterable[BookingQuote]
 ) -> str:
     settings = get_settings()
     max_options = getattr(settings, "max_options", 6)
 
-    sorted_offers = sorted(offers, key=lambda item: item.total_price)
+    unique_offers = select_min_offer_per_room_type(offers)
+    sorted_offers = sorted(unique_offers, key=lambda item: item.total_price)
     formatted_offers = [_format_offer(offer) for offer in sorted_offers[:max_options]]
 
     parts = [_format_header(entities), "\n\n".join(formatted_offers)]
+
+    if unique_offers:
+        parts.append("Показаны минимальные цены по каждому типу номера.")
 
     remaining = len(sorted_offers) - len(formatted_offers)
     if remaining > 0:
@@ -90,6 +112,7 @@ def format_shelter_quote(
 
 __all__ = [
     "format_shelter_quote",
+    "select_min_offer_per_room_type",
     "format_money_rub",
     "format_date_ddmm",
     "detect_detail_mode",

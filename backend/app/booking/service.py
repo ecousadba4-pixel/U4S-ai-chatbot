@@ -27,7 +27,7 @@ class BookingQuoteService:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
         except ShelterCloudAvailabilityError as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
-        return offers[:3]
+        return offers
 
 
 __all__ = ["BookingQuoteService"]
