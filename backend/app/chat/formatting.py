@@ -6,7 +6,6 @@ from typing import Iterable
 
 from app.booking.entities import BookingEntities
 from app.booking.models import BookingQuote
-from app.core.config import get_settings
 
 
 def format_money_rub(amount: float, currency: str | None) -> str:
@@ -61,13 +60,17 @@ def _format_header(entities: BookingEntities) -> str:
 
 
 def _format_offer(offer: BookingQuote) -> str:
-    lines = [f"🏠 {offer.room_name}"]
-    lines.append(f"— {format_money_rub(offer.total_price, offer.currency)}")
+    # Название номера с площадью в скобках
+    name_part = f"🏠 {offer.room_name}"
     if offer.room_area:
-        lines.append(f"— {offer.room_area:g} м²")
+        name_part += f" ({offer.room_area:g} м²)"
+    
+    # Цена с завтраком в скобках
+    price_part = f"— {format_money_rub(offer.total_price, offer.currency)}"
     if offer.breakfast_included:
-        lines.append("— завтрак включён")
-    return "\n".join(lines)
+        price_part += " (завтрак включён)"
+    
+    return f"{name_part}\n{price_part}"
 
 
 def select_min_offer_per_room_type(
@@ -91,21 +94,17 @@ def select_min_offer_per_room_type(
 def format_shelter_quote(
     entities: BookingEntities, offers: Iterable[BookingQuote]
 ) -> str:
-    settings = get_settings()
-    max_options = getattr(settings, "max_options", 6)
+    max_display = 3  # показываем только 3 варианта
 
     unique_offers = select_min_offer_per_room_type(offers)
     sorted_offers = sorted(unique_offers, key=lambda item: item.total_price)
-    formatted_offers = [_format_offer(offer) for offer in sorted_offers[:max_options]]
+    formatted_offers = [_format_offer(offer) for offer in sorted_offers[:max_display]]
 
     parts = [_format_header(entities), "\n\n".join(formatted_offers)]
 
-    if unique_offers:
-        parts.append("Показаны минимальные цены по каждому типу номера.")
-
     remaining = len(sorted_offers) - len(formatted_offers)
     if remaining > 0:
-        parts.append(f"…и ещё {remaining} вариантов. Сказать \"покажи ещё\"?")
+        parts.append(f"Ещё доступно {remaining} вариантов. Показать все?")
 
     return "\n\n".join(filter(None, parts))
 

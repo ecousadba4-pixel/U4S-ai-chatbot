@@ -860,16 +860,13 @@ class ChatComposer:
                 },
             }
 
-        summary_lines = []
-        for offer in offers:
-            line = f"{offer.room_name}: {offer.total_price:.0f} {offer.currency}"
-            if offer.breakfast_included:
-                line += " (завтрак включён)"
-            if offer.room_area:
-                line += f", площадь {offer.room_area} м²"
-            summary_lines.append(line)
-
-        answer = "\n".join(summary_lines)
+        entities = BookingEntities(
+            checkin=state.check_in,
+            checkout=state.check_out,
+            adults=state.adults or 2,
+            children=state.children,
+        )
+        answer = format_shelter_quote(entities, offers)
         return {
             "answer": answer,
             "debug": {
