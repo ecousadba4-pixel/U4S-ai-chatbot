@@ -55,6 +55,53 @@ class Settings(BaseSettings):
     completion_timeout: float = Field(60.0, alias="COMPLETION_TIMEOUT")
     embed_timeout: float = Field(5.0, alias="EMBED_TIMEOUT")
 
+    # === Новые настройки для оптимизации ===
+    
+    # История диалога
+    conversation_history_limit: int = Field(
+        10, 
+        alias="CONVERSATION_HISTORY_LIMIT",
+        description="Максимальное количество сообщений в истории диалога для LLM"
+    )
+    
+    # Circuit breaker
+    circuit_breaker_threshold: int = Field(
+        5, 
+        alias="CIRCUIT_BREAKER_THRESHOLD",
+        description="Количество ошибок для открытия circuit breaker"
+    )
+    circuit_breaker_timeout: float = Field(
+        30.0, 
+        alias="CIRCUIT_BREAKER_TIMEOUT",
+        description="Время ожидания перед попыткой восстановления (секунды)"
+    )
+    
+    # LLM кэш
+    llm_cache_enabled: bool = Field(
+        True, 
+        alias="LLM_CACHE_ENABLED",
+        description="Включить кэширование LLM ответов"
+    )
+    llm_cache_ttl: float = Field(
+        600.0, 
+        alias="LLM_CACHE_TTL",
+        description="TTL кэша LLM ответов в секундах (по умолчанию 10 минут)"
+    )
+    
+    # Streaming
+    llm_streaming_enabled: bool = Field(
+        False, 
+        alias="LLM_STREAMING_ENABLED",
+        description="Включить streaming режим для LLM (быстрый первый токен)"
+    )
+    
+    # Redis state store
+    use_redis_state_store: bool = Field(
+        True,
+        alias="USE_REDIS_STATE_STORE",
+        description="Использовать Redis для хранения состояния диалога (вместо in-memory)"
+    )
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False)
 
 

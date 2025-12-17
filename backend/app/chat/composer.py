@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import logging
 import re
@@ -31,9 +31,13 @@ from app.booking.parsers import (
 from app.booking.slot_filling import CHILDREN_PATTERNS, SlotFiller, SlotState
 from app.llm.amvera_client import AmveraLLMClient
 from app.llm.prompts import FACTS_PROMPT
+from app.llm.cache import get_llm_cache
 from app.rag.context_builder import build_context
 from app.rag.qdrant_client import QdrantClient
 from app.rag.retriever import gather_rag_data
+
+if TYPE_CHECKING:
+    from app.session.redis_state_store import RedisConversationStateStore
 
 
 logger = logging.getLogger(__name__)
@@ -959,7 +963,21 @@ class ChatComposer:
             },
         }
 
-    async def handle_general(self, text: str, *, intent: str = "general") -> dict[str, Any]:
+    async def handle_general(
+        self, 
+        text: str, 
+        *, 
+        intent: str = "general",
+        session_id: str = "anonymous",
+    ) -> dict[str, Any]:
+        """
+        Обрабатывает общие вопросы с поддержкой истории диалога и кэширования.
+        
+        Args:
+            text: Текст сообщения пользователя
+            intent: Определённый intent
+            session_id: ID сессии для истории диалога
+        """
         detail_mode = detect_detail_mode(text)
 
         rag_hits = await gather_rag_data(
@@ -1007,6 +1025,8 @@ class ChatComposer:
             "hits_total": hits_total,
             "guard_triggered": False,
             "llm_called": False,
+            "llm_cache_hit": False,
+            "history_used": False,
         }
         debug["rag_latency_ms"] = rag_hits.get("rag_latency_ms", 0)
         debug["embed_latency_ms"] = rag_hits.get("embed_latency_ms", 0)
@@ -1031,7 +1051,7 @@ class ChatComposer:
                     "Я не нашёл подтверждённой информации в базе знаний, поэтому не буду выдумывать. "
                     "Уточните, пожалуйста: даты заезда и выезда, количество гостей, тип размещения или бюджет? "
                     "Если вам нужна баня/сауна или дополнительные услуги — тоже сообщите. "
-                    "Если вы загрузили описание номеров/домиков в базу — скажите ‘покажи варианты из базы’."
+                    "Если вы загрузили описание номеров/домиков в базу — скажите 'покажи варианты из базы'."
                 )
 
             final_answer = postprocess_answer(
@@ -1039,10 +1059,41 @@ class ChatComposer:
             )
             return {"answer": final_answer, "debug": debug}
 
-        messages = [
+        # Проверяем LLM кэш
+        if self._settings.llm_cache_enabled:
+            llm_cache = get_llm_cache()
+            cached_answer, cached_debug = await llm_cache.get(text, intent, context_text)
+            if cached_answer:
+                debug["llm_cache_hit"] = True
+                debug["llm_called"] = False
+                if cached_debug:
+                    debug.update({k: v for k, v in cached_debug.items() if k not in debug})
+                final_answer = postprocess_answer(
+                    cached_answer,
+                    mode="detail" if detail_mode else "brief",
+                )
+                # Сохраняем в историю даже для кэшированных ответов
+                await self._save_to_history(session_id, "user", text)
+                await self._save_to_history(session_id, "assistant", final_answer)
+                return {"answer": final_answer, "debug": debug}
+
+        # Получаем историю диалога
+        history = await self._get_conversation_history(session_id)
+        
+        # Формируем сообщения с историей
+        messages: list[dict[str, str]] = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text},
         ]
+        
+        # Добавляем историю (последние N сообщений)
+        history_limit = min(len(history), self._settings.conversation_history_limit)
+        if history_limit > 0:
+            messages.extend(history[-history_limit:])
+            debug["history_used"] = True
+            debug["history_messages_count"] = history_limit
+        
+        # Текущее сообщение
+        messages.append({"role": "user", "content": text})
 
         debug["llm_called"] = True
         try:
@@ -1073,7 +1124,44 @@ class ChatComposer:
             mode="detail" if detail_mode else "brief",
         )
 
+        # Сохраняем в LLM кэш
+        if self._settings.llm_cache_enabled and answer:
+            llm_cache = get_llm_cache()
+            await llm_cache.set(
+                text, intent, context_text, answer,
+                debug_info={"llm_latency_ms": debug.get("llm_latency_ms", 0)}
+            )
+
+        # Сохраняем в историю диалога
+        await self._save_to_history(session_id, "user", text)
+        await self._save_to_history(session_id, "assistant", final_answer)
+
         return {"answer": final_answer, "debug": debug}
+    
+    async def _get_conversation_history(self, session_id: str) -> list[dict[str, str]]:
+        """Получает историю диалога из Redis (если доступно)."""
+        if not self._settings.use_redis_state_store:
+            return []
+        
+        try:
+            # Проверяем, является ли store Redis-based
+            if hasattr(self._store, "get_history"):
+                return await self._store.get_history(session_id)
+        except Exception as exc:
+            logger.warning("Failed to get conversation history: %s", exc)
+        
+        return []
+    
+    async def _save_to_history(self, session_id: str, role: str, content: str) -> None:
+        """Сохраняет сообщение в историю диалога."""
+        if not self._settings.use_redis_state_store:
+            return
+        
+        try:
+            if hasattr(self._store, "add_message"):
+                await self._store.add_message(session_id, role, content)
+        except Exception as exc:
+            logger.warning("Failed to save message to history: %s", exc)
 
     def _build_rag_only_answer(
         self,
@@ -1164,7 +1252,15 @@ class ChatComposer:
                 return parts[1].strip()
         return text
 
-    async def handle_knowledge(self, text: str) -> dict[str, Any]:
+    async def handle_knowledge(
+        self, 
+        text: str,
+        *,
+        session_id: str = "anonymous",
+    ) -> dict[str, Any]:
+        """
+        Обрабатывает запросы к базе знаний с поддержкой истории и кэширования.
+        """
         rag_hits = await gather_rag_data(
             query=text,
             client=self._qdrant,
@@ -1197,6 +1293,8 @@ class ChatComposer:
             "merged_hits_count": rag_hits.get("merged_hits_count", 0),
             "boosting_applied": rag_hits.get("boosting_applied", False),
             "intent_detected": rag_hits.get("intent_detected", "knowledge_lookup"),
+            "llm_cache_hit": False,
+            "history_used": False,
         }
         if rag_hits.get("embed_error"):
             debug["embed_error"] = rag_hits["embed_error"]
@@ -1232,10 +1330,32 @@ class ChatComposer:
 
         system_prompt = "\n\n".join(part for part in system_prompt_parts if part)
 
-        messages = [
+        # Проверяем LLM кэш
+        if self._settings.llm_cache_enabled:
+            llm_cache = get_llm_cache()
+            cached_answer, cached_debug = await llm_cache.get(text, "knowledge_lookup", context_text)
+            if cached_answer:
+                debug["llm_cache_hit"] = True
+                debug["llm_called"] = False
+                final_answer = self._finalize_short_answer(cached_answer)
+                await self._save_to_history(session_id, "user", text)
+                await self._save_to_history(session_id, "assistant", final_answer)
+                return {"answer": final_answer, "debug": debug}
+
+        # Получаем историю
+        history = await self._get_conversation_history(session_id)
+        
+        messages: list[dict[str, str]] = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text},
         ]
+        
+        history_limit = min(len(history), self._settings.conversation_history_limit)
+        if history_limit > 0:
+            messages.extend(history[-history_limit:])
+            debug["history_used"] = True
+            debug["history_messages_count"] = history_limit
+        
+        messages.append({"role": "user", "content": text})
 
         debug["llm_called"] = True
         try:
@@ -1258,6 +1378,18 @@ class ChatComposer:
         final_answer = self._finalize_short_answer(
             answer or "Информация из базы пока не найдена."
         )
+
+        # Кэшируем ответ
+        if self._settings.llm_cache_enabled and answer:
+            llm_cache = get_llm_cache()
+            await llm_cache.set(
+                text, "knowledge_lookup", context_text, answer,
+                debug_info={"llm_latency_ms": debug.get("llm_latency_ms", 0)}
+            )
+
+        # Сохраняем в историю
+        await self._save_to_history(session_id, "user", text)
+        await self._save_to_history(session_id, "assistant", final_answer)
 
         return {"answer": final_answer, "debug": debug}
 

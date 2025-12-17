@@ -2,6 +2,7 @@
 Singleton HTTP клиент для эмбеддингов с кэшированием.
 
 Переиспользует соединения и кэширует результаты для ускорения.
+Использует circuit breaker для защиты от каскадных сбоев.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from typing import Any
 import httpx
 
 from app.core.config import get_settings
+from app.core.circuit_breaker import get_circuit_breaker, CircuitBreakerOpenError
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +57,7 @@ class EmbedCache:
 
 
 class EmbedClient:
-    """Singleton клиент для эмбеддинг-сервиса с кэшированием."""
+    """Singleton клиент для эмбеддинг-сервиса с кэшированием и circuit breaker."""
 
     def __init__(
         self,
@@ -77,6 +79,7 @@ class EmbedClient:
         )
         self._client = httpx.AsyncClient(timeout=http_timeout)
         self._cache = EmbedCache(max_size=cache_size, ttl_seconds=cache_ttl)
+        self._circuit_breaker = get_circuit_breaker("embed_service")
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -84,7 +87,7 @@ class EmbedClient:
     async def embed(self, texts: list[str]) -> tuple[list[list[float]], str | None, int]:
         """
         Возвращает (embeddings, error, latency_ms).
-        Использует кэш для повторных запросов.
+        Использует кэш для повторных запросов и circuit breaker для защиты.
         """
         if not texts:
             return [], None, 0
@@ -96,6 +99,23 @@ class EmbedClient:
 
         started = time.perf_counter()
 
+        # Используем circuit breaker
+        try:
+            result = await self._circuit_breaker.call(
+                self._do_embed,
+                texts,
+                fallback=lambda: ([], "circuit_breaker_open", 0),
+            )
+            return result
+        except CircuitBreakerOpenError:
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            logger.warning("Embed circuit breaker is open")
+            return [], "circuit_breaker_open", latency_ms
+
+    async def _do_embed(self, texts: list[str]) -> tuple[list[list[float]], str | None, int]:
+        """Внутренний метод для выполнения запроса эмбеддингов."""
+        started = time.perf_counter()
+
         try:
             response = await self._client.post(self._base_url, json={"texts": list(texts)})
             response.raise_for_status()
@@ -103,7 +123,7 @@ class EmbedClient:
         except httpx.HTTPError as exc:
             latency_ms = int((time.perf_counter() - started) * 1000)
             logger.error("Embedding request failed: %s", exc, extra={"embed_error": str(exc)})
-            return [], str(exc), latency_ms
+            raise  # Пробрасываем для circuit breaker
         except ValueError as exc:
             latency_ms = int((time.perf_counter() - started) * 1000)
             logger.error("Failed to parse embedding response: %s", exc, extra={"embed_error": str(exc)})

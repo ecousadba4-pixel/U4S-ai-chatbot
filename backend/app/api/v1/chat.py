@@ -65,9 +65,9 @@ async def chat_endpoint(
             session_id, payload.message, entities
         )
     elif intent == "knowledge_lookup":
-        result = await composer.handle_knowledge(payload.message)
+        result = await composer.handle_knowledge(payload.message, session_id=session_id)
     else:
-        result = await composer.handle_general(payload.message, intent=intent)
+        result = await composer.handle_general(payload.message, intent=intent, session_id=session_id)
 
     debug = result.get("debug", {})
     debug.setdefault("intent", intent)

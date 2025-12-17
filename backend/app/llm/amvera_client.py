@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Sequence
+import json
+from typing import Any, AsyncIterator, Sequence
 
 import httpx
 from fastapi import HTTPException
@@ -8,10 +9,17 @@ import logging
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.core.config import get_settings
+from app.core.circuit_breaker import get_circuit_breaker, CircuitBreakerOpenError
 
 
 class AmveraLLMClient:
-    """Клиент для Amvera API c проксированным доступом к DeepSeek."""
+    """Клиент для Amvera API c проксированным доступом к DeepSeek.
+    
+    Поддерживает:
+    - Обычные запросы с retry
+    - Streaming для быстрого первого токена
+    - Circuit breaker для защиты от каскадных сбоев
+    """
 
     def __init__(
         self,
@@ -30,6 +38,7 @@ class AmveraLLMClient:
         self._timeout = timeout or settings.llm_timeout or settings.completion_timeout
         self._temperature = settings.llm_temperature
         self._max_tokens = settings.llm_max_tokens
+        self._streaming_enabled = settings.llm_streaming_enabled
         http_timeout = httpx.Timeout(
             connect=settings.request_timeout,
             read=self._timeout,
@@ -38,15 +47,42 @@ class AmveraLLMClient:
         )
         self._client = httpx.AsyncClient(timeout=http_timeout)
         self._logger = logging.getLogger(__name__)
+        self._circuit_breaker = get_circuit_breaker("llm_service")
 
     async def close(self) -> None:
         await self._client.aclose()
 
     async def chat(self, *, model: str | None = None, messages: Sequence[dict[str, str]]) -> str:
+        """
+        Основной метод для получения ответа от LLM.
+        
+        Использует circuit breaker для защиты от каскадных сбоев.
+        """
         settings = get_settings()
         if settings.llm_dry_run:
             return "[LLM отключён: режим dry-run]"
 
+        # Используем circuit breaker
+        try:
+            return await self._circuit_breaker.call(
+                self._do_chat,
+                model=model,
+                messages=messages,
+                fallback=self._fallback_response,
+            )
+        except CircuitBreakerOpenError:
+            self._logger.warning("Circuit breaker is open, returning fallback")
+            return self._fallback_response()
+
+    def _fallback_response(self) -> str:
+        """Fallback ответ при недоступности LLM."""
+        return (
+            "Сейчас сервис генерации ответов временно недоступен. "
+            "Попробуйте повторить запрос через несколько секунд."
+        )
+
+    async def _do_chat(self, *, model: str | None = None, messages: Sequence[dict[str, str]]) -> str:
+        """Внутренний метод выполнения запроса к LLM."""
         headers = {"X-Auth-Token": f"Bearer {self._api_token}"}
         payload = {
             "model": model or self._model,
@@ -76,8 +112,8 @@ class AmveraLLMClient:
                     request_id = None
                     body_preview = ""
                     if response:
-                        headers = response.headers
-                        request_id = headers.get("x-kong-request-id") or headers.get("x-request-id")
+                        resp_headers = response.headers
+                        request_id = resp_headers.get("x-kong-request-id") or resp_headers.get("x-request-id")
                         body_text = response.text
                         if len(body_text) > 300:
                             body_preview = body_text[:300] + "..."
@@ -100,6 +136,57 @@ class AmveraLLMClient:
                     self._logger.error("Amvera response parsing failed: %s", exc)
                     raise HTTPException(status_code=502, detail="LLM provider invalid response") from exc
         return ""
+
+    async def chat_stream(
+        self,
+        *,
+        model: str | None = None,
+        messages: Sequence[dict[str, str]],
+    ) -> AsyncIterator[str]:
+        """
+        Streaming версия для быстрого первого токена.
+        
+        Yields:
+            Части ответа по мере их генерации
+        """
+        settings = get_settings()
+        if settings.llm_dry_run:
+            yield "[LLM отключён: режим dry-run]"
+            return
+
+        headers = {"X-Auth-Token": f"Bearer {self._api_token}"}
+        payload = {
+            "model": model or self._model,
+            "messages": self._format_messages(messages),
+            "temperature": self._temperature,
+            "max_tokens": self._max_tokens,
+            "stream": True,
+        }
+        url = f"{self._api_url}/models/{self._inference_name}"
+
+        try:
+            async with self._client.stream("POST", url, json=payload, headers=headers) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                            choices = chunk.get("choices", [])
+                            if choices:
+                                delta = choices[0].get("delta", {})
+                                content = delta.get("content") or delta.get("text", "")
+                                if content:
+                                    yield content
+                        except json.JSONDecodeError:
+                            continue
+        except httpx.HTTPError as exc:
+            self._logger.error("Streaming request failed: %s", exc)
+            yield self._fallback_response()
 
     @staticmethod
     def _extract_text(data: dict[str, Any]) -> str:
