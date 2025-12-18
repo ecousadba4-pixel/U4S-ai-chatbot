@@ -4,7 +4,7 @@ from functools import lru_cache
 from datetime import date
 
 from app.booking.entities import BookingEntities
-from app.booking.fsm import BookingContext
+from app.booking.fsm import BookingContext, BookingState
 from app.booking.parsers import (
     extract_guests,
     parse_adults,
@@ -95,6 +95,9 @@ class ParsingService:
         self, context: BookingContext, parsers: ParsedMessageCache
     ) -> None:
         """Применяет сущности, извлечённые из текста сообщения, к контексту."""
+        # Защитная проверка доступности BookingState enum
+        assert hasattr(BookingState, 'ASK_ADULTS'), "BookingState enum not properly imported"
+        
         # КРИТИЧНО: не перезаписываем существующий checkin, даже если парсер вернул None
         # Защита от потери данных при парсинге нового сообщения
         if not context.checkin:
@@ -121,7 +124,6 @@ class ParsingService:
                         context.checkout = parsed_checkout
         if context.adults is None:
             # Определяем, разрешены ли общие числа в зависимости от состояния
-            from app.booking.fsm import BookingState
             allow_general_adults = context.state in {
                 BookingState.ASK_ADULTS,
                 BookingState.ASK_CHILDREN_COUNT,
