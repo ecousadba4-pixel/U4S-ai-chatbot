@@ -54,7 +54,23 @@ class BookingFsmService:
     def save_context(self, context: BookingContext) -> dict[str, Any]:
         """Сохраняет контекст бронирования в словарь."""
         context.updated_at = datetime.utcnow().timestamp()
-        return context.to_dict()
+        context_dict = context.to_dict()
+        # КРИТИЧНО: логируем сохранение для диагностики
+        if context.checkin:
+            logger.debug(
+                "Saving context: checkin=%s, state=%s, nights=%s",
+                context.checkin,
+                context.state,
+                context.nights,
+            )
+        else:
+            logger.warning(
+                "Saving context WITHOUT checkin: state=%s, nights=%s, context=%s",
+                context.state,
+                context.nights,
+                context.compact(),
+            )
+        return context_dict
 
     def is_cancel_command(self, normalized: str) -> bool:
         """Проверяет, является ли команда командой отмены."""

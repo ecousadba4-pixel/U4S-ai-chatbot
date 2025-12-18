@@ -74,42 +74,51 @@ class ParsingService:
         self, context: BookingContext, entities: BookingEntities
     ) -> None:
         """Применяет извлечённые сущности к контексту бронирования."""
-        if not context.checkin:
+        # КРИТИЧНО: не перезаписываем существующие значения None или пустыми строками
+        # Защита от потери данных при применении сущностей из нового сообщения
+        if not context.checkin and entities.checkin:
             context.checkin = entities.checkin
-        if not context.checkout:
+        if not context.checkout and entities.checkout:
             context.checkout = entities.checkout
-        if context.nights is None:
+        if context.nights is None and entities.nights is not None:
             context.nights = entities.nights
-        if context.adults is None:
+        if context.adults is None and entities.adults is not None:
             context.adults = entities.adults
-        if context.children is None:
+        if context.children is None and entities.children is not None:
             context.children = entities.children
         if not context.children_ages and entities.children is not None and entities.children <= 0:
             context.children_ages = []
-        if context.room_type is None:
+        if context.room_type is None and entities.room_type:
             context.room_type = entities.room_type
 
     def apply_entities_from_message(
         self, context: BookingContext, parsers: ParsedMessageCache
     ) -> None:
         """Применяет сущности, извлечённые из текста сообщения, к контексту."""
+        # КРИТИЧНО: не перезаписываем существующий checkin, даже если парсер вернул None
+        # Защита от потери данных при парсинге нового сообщения
         if not context.checkin:
-            context.checkin = parsers.checkin()
+            parsed_checkin = parsers.checkin()
+            if parsed_checkin:  # Присваиваем только если парсер что-то нашел
+                context.checkin = parsed_checkin
         if context.nights is None and not context.checkout:
-            context.nights = parsers.nights()
+            parsed_nights = parsers.nights()
+            if parsed_nights is not None:  # Присваиваем только если парсер что-то нашел
+                context.nights = parsed_nights
         if not context.checkout and context.checkin:
             try:
                 checkin_date = date.fromisoformat(context.checkin)
             except ValueError:
                 checkin_date = None
-            parsed_checkout = parsers.checkin(now_date=checkin_date or date.today())
-            if parsed_checkout and parsed_checkout != context.checkin:
-                try:
-                    checkout_date = date.fromisoformat(parsed_checkout)
-                except ValueError:
-                    checkout_date = None
-                if checkout_date and checkin_date and checkout_date > checkin_date:
-                    context.checkout = parsed_checkout
+            if checkin_date:
+                parsed_checkout = parsers.checkin(now_date=checkin_date)
+                if parsed_checkout and parsed_checkout != context.checkin:
+                    try:
+                        checkout_date = date.fromisoformat(parsed_checkout)
+                    except ValueError:
+                        checkout_date = None
+                    if checkout_date and checkin_date and checkout_date > checkin_date:
+                        context.checkout = parsed_checkout
         if context.adults is None:
             # Определяем, разрешены ли общие числа в зависимости от состояния
             from app.booking.fsm import BookingState

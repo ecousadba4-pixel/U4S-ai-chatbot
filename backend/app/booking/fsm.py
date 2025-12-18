@@ -58,8 +58,14 @@ class BookingContext:
             return None
         state = raw.get("state")
         booking_state = BookingState(state) if state else None
+        
+        # КРИТИЧНО: нормализуем checkin - пустые строки преобразуем в None
+        checkin = raw.get("checkin")
+        if checkin == "" or (checkin is not None and not isinstance(checkin, str)):
+            checkin = None
+        
         return cls(
-            checkin=raw.get("checkin"),
+            checkin=checkin,
             nights=raw.get("nights"),
             checkout=raw.get("checkout"),
             adults=raw.get("adults"),

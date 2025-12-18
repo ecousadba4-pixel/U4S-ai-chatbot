@@ -117,12 +117,48 @@ class ChatComposer:
         context_dict = self._booking_store.get(session_id)
         context = self._booking_fsm_service.load_context(context_dict)
         
+        # КРИТИЧНО: логируем состояние до применения сущностей для диагностики
+        checkin_before = context.checkin
+        logger.info(
+            "BEFORE apply_entities: checkin=%s, state=%s, text=%s, entities.checkin=%s",
+            checkin_before,
+            context.state,
+            text,
+            entities.checkin,
+        )
+        
         # Создаём парсеры для сообщения
         parsers = self._parsing_service.create_parsers(text)
         
         # Применяем сущности к контексту
         self._parsing_service.apply_entities_to_context(context, entities)
+        checkin_after_entities = context.checkin
+        logger.info(
+            "AFTER apply_entities_to_context: checkin=%s (was %s)",
+            checkin_after_entities,
+            checkin_before,
+        )
+        
         self._parsing_service.apply_entities_from_message(context, parsers)
+        checkin_after_parsers = context.checkin
+        logger.info(
+            "AFTER apply_entities_from_message: checkin=%s (was %s, entities was %s)",
+            checkin_after_parsers,
+            checkin_after_entities,
+            entities.checkin,
+        )
+        
+        # КРИТИЧНО: если checkin потерялся, восстанавливаем его из загруженного контекста
+        if checkin_before and not checkin_after_parsers:
+            logger.error(
+                "CRITICAL: checkin was lost! Restoring from original context. "
+                "checkin_before=%s, checkin_after=%s, entities.checkin=%s, text=%s",
+                checkin_before,
+                checkin_after_parsers,
+                entities.checkin,
+                text,
+            )
+            context.checkin = checkin_before
         
         # Подготавливаем debug информацию
         debug = {
