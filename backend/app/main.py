@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import suppress
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request, Response
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.v1 import admin, chat, diag, facts, knowledge, rag_search
 from app.booking.service import BookingQuoteService
@@ -176,9 +179,62 @@ def composer_dependency(pool=Depends(get_pool)) -> ChatComposer:
     )
 
 
+# Prometheus метрики
+http_requests_total = Counter(
+    "http_requests_total",
+    "Total number of HTTP requests",
+    ["method", "path", "status"],
+)
+
+http_request_duration_seconds = Histogram(
+    "http_request_duration_seconds",
+    "HTTP request duration in seconds",
+    ["method", "path"],
+)
+
+
+class PrometheusMiddleware(BaseHTTPMiddleware):
+    """Middleware для сбора Prometheus метрик."""
+
+    async def dispatch(self, request: Request, call_next):
+        # Получаем путь без query string
+        path = request.url.path
+        method = request.method
+
+        # Измеряем время выполнения запроса
+        start_time = time.time()
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+        except Exception:
+            # В случае исключения считаем статус 500
+            status_code = 500
+            raise
+        finally:
+            # Вычисляем длительность запроса
+            duration = time.time() - start_time
+
+            # Обновляем метрики
+            http_requests_total.labels(
+                method=method,
+                path=path,
+                status=status_code,
+            ).inc()
+
+            http_request_duration_seconds.labels(
+                method=method,
+                path=path,
+            ).observe(duration)
+
+        return response
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="U4S Chat API", lifespan=lifespan)
     api_prefix = settings.api_prefix
+
+    # Добавляем Prometheus middleware
+    app.add_middleware(PrometheusMiddleware)
 
     app.dependency_overrides[chat.get_composer] = composer_dependency
 
@@ -188,6 +244,16 @@ def create_app() -> FastAPI:
     app.include_router(rag_search.router, prefix=api_prefix)
     app.include_router(diag.router, prefix=api_prefix)
     app.include_router(admin.router, prefix=api_prefix)
+
+    # Добавляем эндпоинт для метрик Prometheus
+    @app.get("/metrics")
+    async def metrics():
+        """Эндпоинт для получения метрик Prometheus."""
+        return Response(
+            content=generate_latest(),
+            media_type=CONTENT_TYPE_LATEST,
+        )
+
     return app
 
 
