@@ -111,6 +111,39 @@
     return safeJsonParse(payload.trim());
   }
 
+  function resolveApiBaseUrl() {
+    // Priority 1: window.__U4S_API_BASE__
+    if (typeof window !== "undefined" && typeof window.__U4S_API_BASE__ === "string") {
+      const value = window.__U4S_API_BASE__.trim();
+      if (value) return value;
+    }
+
+    // Priority 2: inline JSON config (#u4s-config)
+    const inlineConfig = readInlineConfig();
+    if (inlineConfig && typeof inlineConfig === "object") {
+      const value = inlineConfig.apiBaseUrl || inlineConfig.api_base_url || inlineConfig.apiBase || inlineConfig.api_base;
+      if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (trimmed) return trimmed;
+      }
+    }
+
+    // Priority 3: data-u4s-api-base attribute on <html> or <body>
+    const attrHtml = root.getAttribute ? root.getAttribute("data-u4s-api-base") : null;
+    if (attrHtml && typeof attrHtml === "string") {
+      const trimmed = attrHtml.trim();
+      if (trimmed) return trimmed;
+    }
+    const attrBody = body.getAttribute ? body.getAttribute("data-u4s-api-base") : null;
+    if (attrBody && typeof attrBody === "string") {
+      const trimmed = attrBody.trim();
+      if (trimmed) return trimmed;
+    }
+
+    // Priority 4: fallback to empty string (same-origin)
+    return "";
+  }
+
   function selectEndpoint(source) {
     if (!source || typeof source !== "object") return "";
     return (
@@ -140,6 +173,14 @@
   }
 
   function resolveEndpoint() {
+    // First, check if API_BASE_URL is provided
+    const apiBaseUrl = resolveApiBaseUrl();
+    if (apiBaseUrl) {
+      // If API base URL is provided, construct endpoint as ${API_BASE_URL}/v1/chat
+      return `${apiBaseUrl.replace(/\/+$/, "")}/v1/chat`;
+    }
+
+    // Otherwise, use existing endpoint resolution logic for backward compatibility
     const globalConfig = typeof window !== "undefined" ? selectEndpoint(window.__U4S_CONFIG__) : "";
     const inlineConfig = selectEndpoint(readInlineConfig());
     const attrHtml = readAttrEndpoint(root);
@@ -532,8 +573,7 @@
       payload.history = recentHistory;
     }
     try {
-      // Log final URL for debugging (dev mode)
-      console.log("U4S widget: sending request to", ENDPOINT);
+      console.log("U4S widget: resolved API endpoint =", ENDPOINT);
       const response = await fetch(ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
