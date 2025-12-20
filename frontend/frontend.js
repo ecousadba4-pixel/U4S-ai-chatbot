@@ -1,6 +1,10 @@
 (() => {
+  // Backend migrated from /api to /v1
+  const API_PREFIX = "/v1";
+  const CHAT_PATH = `${API_PREFIX}/chat`;
+
   function resolveDefaultEndpoint() {
-    return "/api/chat";
+    return CHAT_PATH;
   }
 
   const DEFAULT_ENDPOINT = resolveDefaultEndpoint();
@@ -528,6 +532,8 @@
       payload.history = recentHistory;
     }
     try {
+      // Log final URL for debugging (dev mode)
+      console.log("U4S widget: sending request to", ENDPOINT);
       const response = await fetch(ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
