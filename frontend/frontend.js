@@ -1,13 +1,4 @@
 (() => {
-  // Backend migrated from /api to /v1
-  const API_PREFIX = "/v1";
-  const CHAT_PATH = `${API_PREFIX}/chat`;
-
-  function resolveDefaultEndpoint() {
-    return CHAT_PATH;
-  }
-
-  const DEFAULT_ENDPOINT = resolveDefaultEndpoint();
   const STORAGE_KEY = "u4s_history_v1";
   const SESSION_KEY = "u4s_session_v1";
   const SIZE_EVENT = "u4s-iframe-size";
@@ -172,29 +163,19 @@
     }
   }
 
-  function resolveEndpoint() {
-    // First, check if API_BASE_URL is provided
+  function buildChatEndpoint() {
     const apiBaseUrl = resolveApiBaseUrl();
     if (apiBaseUrl) {
       // If API base URL is provided, construct endpoint as ${API_BASE_URL}/v1/chat
-      return `${apiBaseUrl.replace(/\/+$/, "")}/v1/chat`;
+      // Remove trailing slashes from base URL to avoid double slashes
+      const base = apiBaseUrl.replace(/\/+$/, "");
+      return `${base}/v1/chat`;
     }
-
-    // Otherwise, use existing endpoint resolution logic for backward compatibility
-    const globalConfig = typeof window !== "undefined" ? selectEndpoint(window.__U4S_CONFIG__) : "";
-    const inlineConfig = selectEndpoint(readInlineConfig());
-    const attrHtml = readAttrEndpoint(root);
-    const attrBody = readAttrEndpoint(body);
-    const query = readQueryEndpoint();
-
-    return (
-      [globalConfig, inlineConfig, attrHtml, attrBody, query, DEFAULT_ENDPOINT]
-        .map((value) => (typeof value === "string" ? value.trim() : ""))
-        .find(Boolean) || DEFAULT_ENDPOINT
-    );
+    // Fallback to same-origin relative path
+    return "/v1/chat";
   }
 
-  const ENDPOINT = resolveEndpoint();
+  const CHAT_ENDPOINT = buildChatEndpoint();
   ensureSessionId();
   const history = loadHistory();
   inMemoryMessages = Array.isArray(history) ? [...history] : [];
@@ -573,8 +554,8 @@
       payload.history = recentHistory;
     }
     try {
-      console.log("U4S widget: resolved API endpoint =", ENDPOINT);
-      const response = await fetch(ENDPOINT, {
+      console.log("U4S widget: resolved API endpoint =", CHAT_ENDPOINT);
+      const response = await fetch(CHAT_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
