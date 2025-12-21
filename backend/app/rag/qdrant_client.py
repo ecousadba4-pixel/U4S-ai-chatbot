@@ -11,11 +11,18 @@ from app.core.config import get_settings
 class QdrantClient:
     """Минимальный клиент Qdrant для поиска ближайших точек."""
 
-    def __init__(self, *, base_url: str | None = None, timeout: float = 10.0) -> None:
+    def __init__(self, *, base_url: str | None = None, api_key: str | None = None, timeout: float = 10.0) -> None:
         settings = get_settings()
         self._base_url = base_url or str(settings.qdrant_url).rstrip("/")
         self._timeout = timeout
-        self._client = httpx.AsyncClient(timeout=timeout)
+        
+        # Формируем заголовки: добавляем api-key если задан
+        headers: dict[str, str] = {}
+        qdrant_api_key = api_key or settings.qdrant_api_key
+        if qdrant_api_key:
+            headers["api-key"] = qdrant_api_key
+        
+        self._client = httpx.AsyncClient(timeout=timeout, headers=headers)
 
     async def close(self) -> None:
         await self._client.aclose()

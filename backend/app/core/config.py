@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import AnyHttpUrl, Field
+from pydantic import AnyHttpUrl, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,7 +12,8 @@ class Settings(BaseSettings):
     """Конфигурация приложения на основе переменных окружения."""
 
     database_url: str = Field(..., alias="DATABASE_URL")
-    qdrant_url: AnyHttpUrl = Field(..., alias="QDRANT_URL")
+    qdrant_url: AnyHttpUrl | None = Field(None, alias="QDRANT_URL")
+    qdrant_api_key: str | None = Field(None, alias="QDRANT_API_KEY")
     qdrant_collection: str = Field("u4s_kb", alias="QDRANT_COLLECTION")
     embed_url: AnyHttpUrl = Field(..., alias="EMBED_URL")
     rag_facts_limit: int = Field(5, alias="RAG_FACTS_LIMIT")
@@ -115,6 +117,29 @@ class Settings(BaseSettings):
         alias="ENABLE_STARTUP_WARMUP",
         description="Выполнять прогрев внешних сервисов при старте",
     )
+
+    @model_validator(mode="after")
+    def _resolve_qdrant_config(self) -> "Settings":
+        """Обработка fallback для Qdrant URL и API key."""
+        # Fallback для Qdrant URL
+        if not self.qdrant_url:
+            for env_var in ["QDRANT_HTTP_URL", "QDRANT_ENDPOINT"]:
+                value = os.getenv(env_var)
+                if value:
+                    self.qdrant_url = AnyHttpUrl(value)
+                    break
+            if not self.qdrant_url:
+                raise ValueError("QDRANT_URL, QDRANT_HTTP_URL or QDRANT_ENDPOINT must be set")
+        
+        # Fallback для Qdrant API key
+        if not self.qdrant_api_key:
+            for env_var in ["QDRANT_SERVICE_API_KEY", "QDRANT__SERVICE__API_KEY", "QDRANT_APIKEY"]:
+                value = os.getenv(env_var)
+                if value:
+                    self.qdrant_api_key = value
+                    break
+        
+        return self
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False)
 

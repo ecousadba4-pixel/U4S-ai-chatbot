@@ -30,6 +30,16 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 setup_logging()
 
+# Логирование конфигурации Qdrant
+qdrant_api_key_status = "missing"
+if settings.qdrant_api_key:
+    qdrant_api_key_status = f"set(len={len(settings.qdrant_api_key)})"
+logger.info(
+    "Qdrant config: url=%s, api_key=%s",
+    settings.qdrant_url,
+    qdrant_api_key_status,
+)
+
 # Выбираем хранилище состояния в зависимости от конфигурации
 if settings.use_redis_state_store:
     shared_state_store = get_redis_state_store()
