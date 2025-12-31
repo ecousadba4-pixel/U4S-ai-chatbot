@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from app.core.config import get_settings
 from app.core.security import verify_api_key
 from app.core.circuit_breaker import get_circuit_breaker_registry
+from app.core.feature_flags import get_feature_flags_service
 from app.llm.cache import get_llm_cache
 from app.rag.qdrant_client import QdrantClient, get_qdrant_client
 from app.rag.retriever import embed_query, qdrant_search
@@ -98,6 +99,32 @@ async def circuit_breakers_status() -> CircuitBreakerStatus:
     return CircuitBreakerStatus(breakers=registry.get_all_status())
 
 
+class FeatureFlagsStatus(BaseModel):
+    """Статус всех feature flags."""
+    total_flags: int
+    enabled_count: int
+    disabled_count: int
+    by_category: dict[str, list[dict[str, Any]]]
+
+
+@router.get("/features", response_model=FeatureFlagsStatus)
+async def feature_flags_status() -> FeatureFlagsStatus:
+    """
+    Возвращает статус всех feature flags.
+    
+    Централизованный эндпоинт для просмотра всех настроек включения/выключения
+    функций системы, сгруппированных по категориям:
+    - storage: Redis state store
+    - caching: LLM cache, RAG cache
+    - llm: streaming, dry-run
+    - resilience: circuit breakers
+    - startup: warmup
+    """
+    service = get_feature_flags_service()
+    summary = service.get_summary()
+    return FeatureFlagsStatus(**summary)
+
+
 @router.post("/circuit_breakers/reset")
 async def reset_circuit_breakers() -> dict[str, str]:
     """Сбрасывает все circuit breakers в CLOSED состояние."""
@@ -129,6 +156,7 @@ async def health_check(
 ) -> HealthStatus:
     """Проверка состояния всех компонентов системы."""
     settings = get_settings()
+    feature_flags = get_feature_flags_service()
     
     components: dict[str, bool] = {}
     
@@ -157,6 +185,13 @@ async def health_check(
     # Статус circuit breakers
     registry = get_circuit_breaker_registry()
     cb_status = {name: status["state"] for name, status in registry.get_all_status().items()}
+    
+    # Обновляем health status для feature flags
+    await feature_flags.update_health_status(
+        redis_healthy=components.get("redis"),
+        qdrant_healthy=components.get("qdrant"),
+        embed_healthy=components.get("embed"),
+    )
     
     # Общий статус: healthy если все критические компоненты работают
     all_healthy = all(components.get(c, False) for c in ["qdrant", "embed"])

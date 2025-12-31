@@ -8,6 +8,14 @@ from typing import Any
 from app.booking.fsm import BookingContext, BookingState, initial_booking_context
 from app.booking.models import BookingQuote, Guests
 from app.booking.service import BookingQuoteService
+from app.services.booking_context_validator import (
+    BookingContextValidator,
+    get_booking_context_validator,
+)
+from app.services.booking_navigation_service import (
+    BookingNavigationService,
+    get_booking_navigation_service,
+)
 from app.services.parsing_service import ParsedMessageCache
 from app.services.response_formatting_service import ResponseFormattingService
 
@@ -22,10 +30,14 @@ class BookingFsmService:
         booking_service: BookingQuoteService,
         formatting_service: ResponseFormattingService,
         max_state_attempts: int = 3,
+        navigation_service: BookingNavigationService | None = None,
+        context_validator: BookingContextValidator | None = None,
     ) -> None:
         self._booking_service = booking_service
         self._formatting_service = formatting_service
         self._max_state_attempts = max_state_attempts
+        self._navigation = navigation_service or get_booking_navigation_service()
+        self._validator = context_validator or get_booking_context_validator()
 
     def load_context(self, context_dict: dict[str, Any] | None) -> BookingContext:
         """Загружает контекст бронирования из словаря."""
@@ -74,59 +86,16 @@ class BookingFsmService:
 
     def is_cancel_command(self, normalized: str) -> bool:
         """Проверяет, является ли команда командой отмены."""
-        return normalized in {
-            "отмена",
-            "отменить",
-            "стоп",
-            "cancel",
-            "отмени",
-            "начать заново",
-            "начнём заново",
-            "начнем заново",
-            "сброс",
-            "сбросить",
-        }
+        return self._navigation.is_cancel_command(normalized)
 
     def is_back_command(self, normalized: str) -> bool:
         """Проверяет, является ли команда командой возврата назад."""
-        return normalized in {"назад", "вернись", "вернуться"}
+        return self._navigation.is_back_command(normalized)
 
     def go_back(self, context: BookingContext) -> None:
         """Возвращает FSM на предыдущее состояние."""
-        previous = self._previous_state(context.state)
-        if previous == BookingState.ASK_CHECKIN:
-            context.checkin = None
-            context.nights = None
-            context.checkout = None
-        if previous == BookingState.ASK_NIGHTS_OR_CHECKOUT:
-            context.nights = None
-            context.checkout = None
-        if previous == BookingState.ASK_ADULTS:
-            context.adults = None
-        if previous == BookingState.ASK_CHILDREN_COUNT:
-            context.children = None
-            context.children_ages = []
-        if previous == BookingState.ASK_CHILDREN_AGES:
-            context.children_ages = []
-        if previous is not None:
-            context.state = previous
+        self._navigation.go_back(context)
 
-    def _previous_state(self, state: BookingState | None) -> BookingState | None:
-        """Возвращает предыдущее состояние FSM."""
-        order = [
-            BookingState.ASK_CHECKIN,
-            BookingState.ASK_NIGHTS_OR_CHECKOUT,
-            BookingState.ASK_ADULTS,
-            BookingState.ASK_CHILDREN_COUNT,
-            BookingState.ASK_CHILDREN_AGES,
-            BookingState.CALCULATE,
-            BookingState.AWAITING_USER_DECISION,
-            BookingState.CONFIRM_BOOKING,
-        ]
-        if state in order:
-            idx = order.index(state)
-            return order[idx - 1] if idx > 0 else BookingState.ASK_CHECKIN
-        return BookingState.ASK_CHECKIN
 
     async def process_message(
         self,
@@ -140,8 +109,7 @@ class BookingFsmService:
         normalized = text.strip().lower()
         
         if self.is_cancel_command(normalized):
-            context.state = BookingState.CANCELLED
-            return "Отменяю бронирование. Если понадобится помощь, напишите."
+            return self._navigation.handle_cancel(context)
 
         if context.state in (None, BookingState.DONE, BookingState.CANCELLED):
             context.state = BookingState.ASK_CHECKIN
@@ -149,23 +117,8 @@ class BookingFsmService:
         if self.is_back_command(normalized):
             self.go_back(context)
 
-        # КРИТИЧНО: валидация контекста перед обработкой
-        # Если состояние требует checkin, но его нет, возвращаемся к начальному состоянию
-        if context.state in {
-            BookingState.ASK_NIGHTS_OR_CHECKOUT,
-            BookingState.ASK_ADULTS,
-            BookingState.ASK_CHILDREN_COUNT,
-            BookingState.ASK_CHILDREN_AGES,
-            BookingState.CALCULATE,
-        }:
-            if not context.checkin:
-                logger.warning(
-                    "Context validation failed: state %s requires checkin but it's missing. "
-                    "Resetting to ASK_CHECKIN. Context: %s",
-                    context.state,
-                    context.compact(),
-                )
-                context.state = BookingState.ASK_CHECKIN
+        # Централизованная валидация контекста
+        self._validator.ensure_valid_state(context)
 
         logger.info(
             "BOOKING_FSM state=%s ctx=%s message=%s",
@@ -211,16 +164,13 @@ class BookingFsmService:
 
             if state == BookingState.ASK_NIGHTS_OR_CHECKOUT:
                 context.state = BookingState.ASK_NIGHTS_OR_CHECKOUT
-                # КРИТИЧНО: проверяем наличие checkin перед обработкой
-                # Если checkin потерялся, возвращаемся к запросу даты заезда
+                # Валидация checkin через централизованный сервис
                 if not context.checkin:
-                    logger.warning(
-                        "Lost checkin date in ASK_NIGHTS_OR_CHECKOUT state, returning to ASK_CHECKIN. "
-                        "Context: %s", context.compact()
-                    )
-                    context.state = BookingState.ASK_CHECKIN
-                    state = BookingState.ASK_CHECKIN
-                    continue
+                    validation = self._validator.validate_context_for_state(context, state)
+                    if not validation.is_valid and validation.suggested_state:
+                        context.state = validation.suggested_state
+                        state = validation.suggested_state
+                        continue
                 
                 if context.nights is not None or context.checkout:
                     state = BookingState.ASK_ADULTS
@@ -252,11 +202,8 @@ class BookingFsmService:
                 if nights:
                     context.nights = nights
                     consumed_fields.add("nights")
-                    # Перед переходом к следующему состоянию убеждаемся, что checkin сохранен
-                    if not context.checkin:
-                        logger.warning(
-                            "Lost checkin date after extracting nights, returning to ASK_CHECKIN"
-                        )
+                    # Валидация checkin через сервис
+                    if self._navigation.requires_checkin(BookingState.ASK_ADULTS) and not context.checkin:
                         context.state = BookingState.ASK_CHECKIN
                         state = BookingState.ASK_CHECKIN
                         continue
@@ -265,11 +212,8 @@ class BookingFsmService:
                     continue
                 if checkout_value:
                     context.checkout = checkout_value
-                    # Перед переходом к следующему состоянию убеждаемся, что checkin сохранен
-                    if not context.checkin:
-                        logger.warning(
-                            "Lost checkin date after extracting checkout, returning to ASK_CHECKIN"
-                        )
+                    # Валидация checkin через сервис
+                    if self._navigation.requires_checkin(BookingState.ASK_ADULTS) and not context.checkin:
                         context.state = BookingState.ASK_CHECKIN
                         state = BookingState.ASK_CHECKIN
                         continue
@@ -284,12 +228,8 @@ class BookingFsmService:
 
             if state == BookingState.ASK_ADULTS:
                 context.state = BookingState.ASK_ADULTS
-                # КРИТИЧНО: проверяем наличие checkin перед обработкой
-                if not context.checkin:
-                    logger.warning(
-                        "Lost checkin date in ASK_ADULTS state, returning to ASK_CHECKIN. "
-                        "Context: %s", context.compact()
-                    )
+                # Валидация checkin через централизованный сервис
+                if self._navigation.requires_checkin(state) and not context.checkin:
                     context.state = BookingState.ASK_CHECKIN
                     state = BookingState.ASK_CHECKIN
                     continue
@@ -703,16 +643,10 @@ class BookingFsmService:
             return self._show_more_offers(context)
 
         if "дат" in normalized:
-            context.state = BookingState.ASK_CHECKIN
-            context.checkin = None
-            context.checkout = None
-            context.nights = None
+            self._navigation.reset_dates(context)
             return self._booking_prompt("Изменим даты. На какую дату планируете заезд?", context)
         if "гост" in normalized or "люд" in normalized:
-            context.state = BookingState.ASK_ADULTS
-            context.adults = None
-            context.children = None
-            context.children_ages = []
+            self._navigation.reset_guests(context)
             return self._booking_prompt("Сколько взрослых едет?", context)
 
         # Проверяем, является ли сообщение общим вопросом
@@ -785,18 +719,7 @@ class BookingFsmService:
 
     def get_missing_context_fields(self, context: BookingContext) -> list[str]:
         """Возвращает список отсутствующих полей в контексте."""
-        missing: list[str] = []
-        if not context.checkin:
-            missing.append("checkin")
-        if not context.checkout and context.nights is None:
-            missing.append("checkout_or_nights")
-        if context.adults is None:
-            missing.append("adults")
-        if context.children is None:
-            missing.append("children")
-        if (context.children or 0) > 0 and not context.children_ages:
-            missing.append("children_ages")
-        return missing
+        return self._validator.get_missing_fields(context)
 
 
 __all__ = ["BookingFsmService"]
